@@ -23,7 +23,7 @@
     "bindings": "^1.5.0",
     "debug": "^4.3.4",
     "nan": "^2.16.0",
-    "readable-stream": "^1.0.34"
+    "readable-stream": "^4.3.0"
   },
   "devDependencies": {
     "@machinomy/types-readable-stream": "git+https://github.com/machinomy/types-readable-stream.git",
