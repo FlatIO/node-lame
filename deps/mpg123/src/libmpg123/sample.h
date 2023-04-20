@@ -14,11 +14,11 @@
 
 /* Special case is fixed point math... which does work, but not that nice yet.  */
 #ifdef REAL_IS_FIXED
-static inline short idiv_signed_rounded(long x, int shift)
+static inline int16_t idiv_signed_rounded(int32_t x, int shift)
 {
 	x >>= (shift - 1);
 	x += (x & 1);
-	return (short)(x >> 1);
+	return (int16_t)(x >> 1);
 }
 #  define REAL_PLUS_32767       ( 32767 << 15 )
 #  define REAL_MINUS_32768      ( -32768 << 15 )
@@ -32,11 +32,12 @@ static inline short idiv_signed_rounded(long x, int shift)
 /* From now on for single precision float... double precision is a possible option once we added some bits. But, it would be rather insane. */
 #ifndef REAL_TO_SHORT
 
+#if (defined FORCE_ACCURATE) || (defined ACCURATE_ROUNDING)
 /* Define the accurate rounding function. */
 # if (defined REAL_IS_FLOAT) && (defined IEEE_FLOAT)
 /* This function is only available for IEEE754 single-precision values
    This is nearly identical to proper rounding, just -+0.5 is rounded to 0 */
-static inline short ftoi16(float x)
+static inline int16_t ftoi16(float x)
 {
 	union
 	{
@@ -44,13 +45,14 @@ static inline short ftoi16(float x)
 		int32_t i;
 	} u_fi;
 	u_fi.f = x + 12582912.0f; /* Magic Number: 2^23 + 2^22 */
-	return (short)u_fi.i;
+	return (int16_t)u_fi.i;
 }
 #  define REAL_TO_SHORT_ACCURATE(x)      ftoi16(x)
 # else
 /* The "proper" rounding, plain C, a bit slow. */
 #  define REAL_TO_SHORT_ACCURATE(x)      (short)((x)>0.0?(x)+0.5:(x)-0.5)
 # endif
+#endif
 
 /* Now define the normal rounding. */
 # ifdef ACCURATE_ROUNDING
@@ -139,7 +141,7 @@ static inline short ftoi16(float x)
 /* Produce an 8bit sample, via 16bit intermediate. */
 #define WRITE_8BIT_SAMPLE(samples,sum,clip) \
 { \
-	short write_8bit_tmp; \
+	int16_t write_8bit_tmp; \
 	if( (sum) > REAL_PLUS_32767) { write_8bit_tmp = 0x7fff; (clip)++; } \
 	else if( (sum) < REAL_MINUS_32768) { write_8bit_tmp = -0x8000; (clip)++; } \
 	else { write_8bit_tmp = REAL_TO_SHORT(sum); } \

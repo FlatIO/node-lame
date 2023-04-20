@@ -10,20 +10,29 @@
 #define _MPG123_COMMON_H_
 
 #include "mpg123app.h"
+#include "out123.h"
 
-void (*catchsignal(int signum, void(*handler)()))();
+extern int stopped;
+extern int paused;
+
+/* Return non-zero if full terminal fun is desired/possible. */
+int term_have_fun(int fd);
+
+/* Return width of terminal associated with given descriptor,
+   -1 when there is none. */
+int term_width(int fd);
 
 void print_header(mpg123_handle *);
 void print_header_compact(mpg123_handle *);
-void print_stat(mpg123_handle *fr, long offset, long buffsize);
+void print_stat(mpg123_handle *fr, long offset, out123_handle *ao, int draw_bar);
+void print_buf(const char* prefix, out123_handle *ao);
 void clear_stat();
 /* for control_generic */
 extern const char* remote_header_help;
 void print_remote_header(mpg123_handle *mh);
 void generic_sendmsg (const char *fmt, ...);
 
-int split_dir_file(const char *path, char **dname, char **fname);
-
 extern const char* rva_name[3];
+
 #endif
 

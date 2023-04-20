@@ -1,7 +1,7 @@
 /*
 	term: terminal control
 
-	copyright ?-2008 by the mpg123 project - free software under the terms of the LGPL 2.1
+	copyright ?-2015 by the mpg123 project - free software under the terms of the LGPL 2.1
 	see COPYING and AUTHORS files in distribution or http://mpg123.org
 	initially written by Michael Hipp
 */
@@ -13,19 +13,17 @@
 #include <termios.h>
 #include <ctype.h>
 
-#include "buffer.h"
 #include "term.h"
 #include "common.h"
 #include "playlist.h"
 #include "metaprint.h"
 #include "debug.h"
 
-extern int buffer_pid;
-extern audio_output_t *ao;
-
 static int term_enable = 0;
 static struct termios old_tio;
 int seeking = FALSE;
+
+extern out123_handle *ao;
 
 /* Buffered key from a signal or whatnot.
    We ignore the null character... */
@@ -39,6 +37,8 @@ struct keydef term_help[] =
 	 { MPG123_STOP_KEY,  ' ', "interrupt/restart playback (i.e. '(un)pause')" }
 	,{ MPG123_NEXT_KEY,    0, "next track" }
 	,{ MPG123_PREV_KEY,    0, "previous track" }
+	,{ MPG123_NEXT_DIR_KEY, 0, "next directory (next track until directory part changes)" }
+	,{ MPG123_PREV_DIR_KEY, 0, "previous directory (previous track until directory part changes)" }
 	,{ MPG123_BACK_KEY,    0, "back to beginning of track" }
 	,{ MPG123_PAUSE_KEY,   0, "loop around current position (don't combine with output buffer)" }
 	,{ MPG123_FORWARD_KEY, 0, "forward" }
@@ -59,6 +59,7 @@ struct keydef term_help[] =
 	,{ MPG123_PITCH_UP_KEY, MPG123_PITCH_BUP_KEY, "pitch up (small step, big step)" }
 	,{ MPG123_PITCH_DOWN_KEY, MPG123_PITCH_BDOWN_KEY, "pitch down (small step, big step)" }
 	,{ MPG123_PITCH_ZERO_KEY, 0, "reset pitch to zero" }
+	,{ MPG123_BOOKMARK_KEY, 0, "print out current position in playlist and track, for the benefit of some external tool to store bookmarks" }
 };
 
 void term_sigcont(int sig);
@@ -105,7 +106,15 @@ static void term_sigusr(int sig)
 /* initialze terminal */
 void term_init(void)
 {
+	const char hide_cursor[] = "\x1b[?25l";
 	debug("term_init");
+
+	if(term_have_fun(STDERR_FILENO))
+		write(STDERR_FILENO, hide_cursor, sizeof(hide_cursor));
+
+	debug1("param.term_ctrl: %i", param.term_ctrl);
+	if(!param.term_ctrl)
+		return;
 
 	term_enable = 0;
 
@@ -125,13 +134,12 @@ void term_init(void)
 
 void term_hint(void)
 {
-	fprintf(stderr, "\nTerminal control enabled, press 'h' for listing of keys and functions.\n\n");
+	if(term_enable)
+		fprintf(stderr, "\nTerminal control enabled, press 'h' for listing of keys and functions.\n\n");
 }
 
-static void term_handle_input(mpg123_handle *, audio_output_t *, int);
+static void term_handle_input(mpg123_handle *, out123_handle *, int);
 
-static int stopped = 0;
-static int paused = 0;
 static int pause_cycle;
 
 static int print_index(mpg123_handle *mh)
@@ -172,38 +180,27 @@ void pause_uncycle(void)
 	offset += pause_cycle;
 }
 
-off_t term_control(mpg123_handle *fr, audio_output_t *ao)
+off_t term_control(mpg123_handle *fr, out123_handle *ao)
 {
 	offset = 0;
-debug1("control for frame: %li", (long)mpg123_tellframe(fr));
+	debug2("control for frame: %li, enable: %i", (long)mpg123_tellframe(fr), term_enable);
 	if(!term_enable) return 0;
 
 	if(paused)
 	{
 		/* pause_cycle counts the remaining frames _after_ this one, thus <0, not ==0 . */
 		if(--pause_cycle < 0)
-		{
 			pause_recycle(fr);
-			if(param.usebuffer)
-			{
-				while(paused && xfermem_get_usedspace(buffermem))
-				{
-					buffer_ignore_lowmem();
-					term_handle_input(fr, ao, TRUE);
-				}
-				/* Undo the cycling offset if we are done with cycling. */
-				if(!paused)	pause_uncycle();
-			}
-		}
 	}
 
 	do
 	{
+		off_t old_offset = offset;
 		term_handle_input(fr, ao, stopped|seeking);
 		if((offset < 0) && (-offset > framenum)) offset = - framenum;
-		if(param.verbose && offset != 0)
-		print_stat(fr,offset,0);
-	} while (stopped);
+		if(param.verbose && offset != old_offset)
+			print_stat(fr,offset,ao,1);
+	} while (!intflag && stopped);
 
 	/* Make the seeking experience with buffer less annoying.
 	   No sound during seek, but at least it is possible to go backwards. */
@@ -213,19 +210,40 @@ debug1("control for frame: %li", (long)mpg123_tellframe(fr));
 		debug1("seeked to %li", (long)offset);
 		else error1("seek failed: %s!", mpg123_strerror(fr));
 		/* Buffer resync already happened on un-stop? */
-		/* if(param.usebuffer) buffer_resync();*/
+		/* if(param.usebuffer) audio_drop(ao);*/
 	}
 	return 0;
 }
 
 /* Stop playback while seeking if buffer is involved. */
-static void seekmode(void)
+static void seekmode(mpg123_handle *mh, out123_handle *ao)
 {
 	if(param.usebuffer && !stopped)
 	{
+		int channels = 0;
+		int encoding = 0;
+		int pcmframe;
+		off_t back_samples = 0;
+
 		stopped = TRUE;
-		buffer_stop();
+		out123_pause(ao);
+		if(param.verbose)
+			print_stat(mh, 0, ao, 0);
+		mpg123_getformat(mh, NULL, &channels, &encoding);
+		pcmframe = out123_encsize(encoding)*channels;
+		if(pcmframe > 0)
+			back_samples = out123_buffered(ao)/pcmframe;
+		if(param.verbose > 2)
+			fprintf(stderr, "\nseeking back %"OFF_P" samples from %"OFF_P"\n"
+			,	(off_p)back_samples, (off_p)mpg123_tell(mh));
+		mpg123_seek(mh, -back_samples, SEEK_CUR);
+		out123_drop(ao);
+		if(param.verbose > 2)
+			fprintf(stderr, "\ndropped, now at %"OFF_P"\n"
+			,	(off_p)mpg123_tell(mh));
 		fprintf(stderr, "%s", MPG123_STOPPED_STRING);
+		if(param.verbose)
+			print_stat(mh, 0, ao, 1);
 	}
 }
 
@@ -260,13 +278,14 @@ static int get_key(int do_delay, char *val)
 	else return 0;
 }
 
-static void term_handle_key(mpg123_handle *fr, audio_output_t *ao, char val)
+static void term_handle_key(mpg123_handle *fr, out123_handle *ao, char val)
 {
+	debug1("term_handle_key: %c", val);
 	switch(tolower(val))
 	{
 	case MPG123_BACK_KEY:
-		if(!param.usebuffer) ao->flush(ao);
-				else buffer_resync();
+		out123_pause(ao);
+		out123_drop(ao);
 		if(paused) pause_cycle=(int)(LOOP_CYCLES/mpg123_tpf(fr));
 
 		if(mpg123_seek_frame(fr, 0, SEEK_SET) < 0)
@@ -275,84 +294,90 @@ static void term_handle_key(mpg123_handle *fr, audio_output_t *ao, char val)
 		framenum=0;
 	break;
 	case MPG123_NEXT_KEY:
-		if(!param.usebuffer) ao->flush(ao);
-		else buffer_resync(); /* was: plain_buffer_resync */
+		out123_pause(ao);
+		out123_drop(ao);
 		next_track();
+	break;
+	case MPG123_NEXT_DIR_KEY:
+		out123_pause(ao);
+		out123_drop(ao);
+		next_dir();
 	break;
 	case MPG123_QUIT_KEY:
 		debug("QUIT");
 		if(stopped)
 		{
 			stopped = 0;
-			if(param.usebuffer)
-			{
-				buffer_resync();
-				buffer_start();
-			}
+			out123_pause(ao); /* no chance for annoying underrun warnings */
+			out123_drop(ao);
 		}
 		set_intflag();
 		offset = 0;
 	break;
 	case MPG123_PAUSE_KEY:
 		paused=1-paused;
-		if(paused) {
+		out123_pause(ao); /* underrun awareness */
+		out123_drop(ao);
+		if(paused)
+		{
 			/* Not really sure if that is what is wanted
 				 This jumps in audio output, but has direct reaction to pausing loop. */
-			if(param.usebuffer) buffer_resync();
-
+			out123_param_float(ao, OUT123_PRELOAD, 0.);
 			pause_recycle(fr);
 		}
+		else
+			out123_param_float(ao, OUT123_PRELOAD, param.preload);
 		if(stopped)
-		{
 			stopped=0;
-			if(param.usebuffer) buffer_start();
-		}
-		fprintf(stderr, "%s", (paused) ? MPG123_PAUSED_STRING : MPG123_EMPTY_STRING);
+		if(param.verbose)
+			print_stat(fr, 0, ao, 1);
+		else
+			fprintf(stderr, "%s", (paused) ? MPG123_PAUSED_STRING : MPG123_EMPTY_STRING);
 	break;
 	case MPG123_STOP_KEY:
 	case ' ':
-		/* when seeking while stopped and then resuming, I want to prevent the chirp from the past */
-		if(!param.usebuffer) ao->flush(ao);
+		/* TODO: Verify/ensure that there is no "chirp from the past" when
+		   seeking while stopped. */
 		stopped=1-stopped;
 		if(paused) {
 			paused=0;
 			offset -= pause_cycle;
 		}
-		if(param.usebuffer)
+		if(stopped)
+			out123_pause(ao);
+		else
 		{
-			if(stopped) buffer_stop();
-			else
-			{
-				/* When we stopped buffer for seeking, we must resync. */
-				if(offset) buffer_resync();
-
-				buffer_start();
-			}
+			if(offset) /* If position changed, old is outdated. */
+				out123_drop(ao);
+			/* No out123_continue(), that's triggered by out123_play(). */
 		}
-		fprintf(stderr, "%s", (stopped) ? MPG123_STOPPED_STRING : MPG123_EMPTY_STRING);
+		if(param.verbose)
+			print_stat(fr, 0, ao, 1);
+		else
+			fprintf(stderr, "%s", (stopped) ? MPG123_STOPPED_STRING : MPG123_EMPTY_STRING);
 	break;
 	case MPG123_FINE_REWIND_KEY:
-		if(param.usebuffer) seekmode();
+		seekmode(fr, ao);
 		offset--;
 	break;
 	case MPG123_FINE_FORWARD_KEY:
-		seekmode();
+		seekmode(fr, ao);
 		offset++;
 	break;
 	case MPG123_REWIND_KEY:
-		seekmode();
+		seekmode(fr, ao);
 		  offset-=10;
 	break;
 	case MPG123_FORWARD_KEY:
-		seekmode();
+		seekmode(fr, ao);
 		offset+=10;
 	break;
 	case MPG123_FAST_REWIND_KEY:
-		seekmode();
+		seekmode(fr, ao);
 		offset-=50;
 	break;
 	case MPG123_FAST_FORWARD_KEY:
-		seekmode();
+		seekmode(fr, ao);
 		offset+=50;
 	break;
 	case MPG123_VOL_UP_KEY:
@@ -377,7 +402,12 @@ static void term_handle_key(mpg123_handle *fr, audio_output_t *ao, char val)
 			case MPG123_PITCH_ZERO_KEY:  new_pitch = 0.0; break;
 		}
 		set_pitch(fr, ao, new_pitch);
-		fprintf(stderr, "New pitch: %f\n", param.pitch);
+		if(param.verbose > 1)
+		{
+			print_stat(fr,0,ao,0);
+			fprintf(stderr, "\nNew pitch: %f\n", param.pitch);
+			print_stat(fr,0,ao,1);
+		}
 	}
 	break;
 	case MPG123_VERBOSE_KEY:
@@ -393,32 +423,49 @@ static void term_handle_key(mpg123_handle *fr, audio_output_t *ao, char val)
 		if(++param.rva > MPG123_RVA_MAX) param.rva = 0;
 		mpg123_param(fr, MPG123_RVA, param.rva, 0);
 		mpg123_volume_change(fr, 0.);
+		if(param.verbose)
+			print_stat(fr,0,ao,1);
 	break;
 	case MPG123_PREV_KEY:
-		if(!param.usebuffer) ao->flush(ao);
-		else buffer_resync(); /* was: plain_buffer_resync */
+		out123_pause(ao);
+		out123_drop(ao);
 
 		prev_track();
 	break;
+	case MPG123_PREV_DIR_KEY:
+		out123_pause(ao);
+		out123_drop(ao);
+		prev_dir();
+	break;
 	case MPG123_PLAYLIST_KEY:
+		if(param.verbose)
+			print_stat(fr,0,ao,0);
 		fprintf(stderr, "%s\nPlaylist (\">\" indicates current track):\n", param.verbose ? "\n" : "");
 		print_playlist(stderr, 1);
 		fprintf(stderr, "\n");
 	break;
 	case MPG123_TAG_KEY:
+		if(param.verbose)
+			print_stat(fr,0,ao,0);
 		fprintf(stderr, "%s\n", param.verbose ? "\n" : "");
 		print_id3_tag(fr, param.long_id3, stderr);
 		fprintf(stderr, "\n");
 	break;
 	case MPG123_MPEG_KEY:
-		if(param.verbose) print_stat(fr,0,0); /* Make sure that we are talking about the correct frame. */
+		if(param.verbose)
+			print_stat(fr,0,ao,0);
 		fprintf(stderr, "\n");
-		print_header(fr);
+		if(param.verbose > 1)
+			print_header(fr);
+		else
+			print_header_compact(fr);
 		fprintf(stderr, "\n");
 	break;
 	case MPG123_HELP_KEY:
 	{ /* This is more than the one-liner before, but it's less spaghetti. */
 		int i;
+		if(param.verbose)
+			print_stat(fr,0,ao,0);
 		fprintf(stderr,"\n\n -= terminal control keys =-\n");
 		for(i=0; i<(sizeof(term_help)/sizeof(struct keydef)); ++i)
 		{
@@ -427,6 +474,7 @@ static void term_handle_key(mpg123_handle *fr, audio_output_t *ao, char val)
 
 			fprintf(stderr, "\t%s\n", term_help[i].desc);
 		}
+		fprintf(stderr, "\nAlso, the number row (starting at 1, ending at 0) gives you jump points into the current track at 10%% intervals.\n");
 		fprintf(stderr, "\n");
 	}
 	break;
@@ -453,12 +501,42 @@ static void term_handle_key(mpg123_handle *fr, audio_output_t *ao, char val)
 			}
 		}
 	break;
+	case '0':
+	case '1':
+	case '2':
+	case '3':
+	case '4':
+	case '5':
+	case '6':
+	case '7':
+	case '8':
+	case '9':
+	{
+		off_t len;
+		int num;
+		num = val == '0' ? 10 : val - '0';
+		--num; /* from 0 to 9 */
+
+		/* Do not swith to seekmode() here, as we are jumping once to a
+		   specific position. Dropping buffer contents is enough and there
+		   is no race filling the buffer or waiting for more incremental
+		   seek orders. */
+		len = mpg123_length(fr);
+		out123_pause(ao);
+		out123_drop(ao);
+		if(len > 0)
+			mpg123_seek(fr, (off_t)( (num/10.)*len ), SEEK_SET);
+	}
+	break;
+	case MPG123_BOOKMARK_KEY:
+		continue_msg("BOOKMARK");
+	break;
 	default:
 		;
 	}
 }
 
-static void term_handle_input(mpg123_handle *fr, audio_output_t *ao, int do_delay)
+static void term_handle_input(mpg123_handle *fr, out123_handle *ao, int do_delay)
 {
 	char val;
 	/* Do we really want that while loop? This means possibly handling multiple inputs that come very rapidly in one go. */
@@ -468,8 +546,13 @@ static void term_handle_input(mpg123_handle *fr, audio_output_t *ao, int do_dela
 	}
 }
 
-void term_restore(void)
+void term_exit(void)
 {
+	const char cursor_restore[] = "\x1b[?25h";
+	/* Bring cursor back. */
+	if(term_have_fun(STDERR_FILENO))
+		write(STDERR_FILENO, cursor_restore, sizeof(cursor_restore));
+
 	if(!term_enable) return;
 
 	tcsetattr(0,TCSAFLUSH,&old_tio);

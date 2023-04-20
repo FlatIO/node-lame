@@ -31,13 +31,13 @@
 	.data
 #endif
 	ALIGN32
-ASM_NAME(scale_s32):
+scale_s32:
 	.long   1199570944 /* 65536.0 */
 	.long   1199570944
 	.long   1199570944
 	.long   1199570944
 	ALIGN16
-ASM_NAME(maxmin_s32):
+maxmin_s32:
 	.long   1191182335 /* 32767.999 */
 	.long   1191182335
 	.long   1191182335
@@ -70,10 +70,14 @@ ASM_NAME(synth_1to1_s32_s_sse_asm):
 	leal		64(WINDOW), WINDOW
 	subl		%eax, WINDOW
 
+	#undef _EBX_
+	#define _EBX_ %eax
+	GET_GOT
+
 	movl		$4, %ecx
 	
 	ALIGN16
-Loop_start_1:
+1:
 	movups		(WINDOW), %xmm0
 	movups		16(WINDOW), %xmm1
 	movups		32(WINDOW), %xmm2
@@ -235,12 +239,12 @@ Loop_start_1:
 	movaps		%xmm5, %xmm2
 	movaps		%xmm0, %xmm3
 	movaps		%xmm0, %xmm4
-	mulps		ASM_NAME(scale_s32), %xmm5
-	mulps		ASM_NAME(scale_s32), %xmm0
-	cmpnleps	ASM_NAME(maxmin_s32), %xmm1
-	cmpltps		ASM_NAME(maxmin_s32)+16, %xmm2
-	cmpnleps	ASM_NAME(maxmin_s32), %xmm3
-	cmpltps		ASM_NAME(maxmin_s32)+16, %xmm4
+	mulps		LOCAL_VAR(scale_s32), %xmm5
+	mulps		LOCAL_VAR(scale_s32), %xmm0
+	cmpnleps	LOCAL_VAR(maxmin_s32), %xmm1
+	cmpltps		16+LOCAL_VAR(maxmin_s32), %xmm2
+	cmpnleps	LOCAL_VAR(maxmin_s32), %xmm3
+	cmpltps		16+LOCAL_VAR(maxmin_s32), %xmm4
 	cvtps2pi	%xmm5, %mm0
 	cvtps2pi	%xmm0, %mm1
 	cvtps2pi	%xmm1, %mm2
@@ -293,12 +297,12 @@ Loop_start_1:
 	
 	leal		32(SAMPLES), SAMPLES
 	decl		%ecx
-	jnz			Loop_start_1
+	jnz			1b
 	
 	movl		$4, %ecx
 	
 	ALIGN16
-Loop_start_2:
+1:
 	movups		(WINDOW), %xmm0
 	movups		16(WINDOW), %xmm1
 	movups		32(WINDOW), %xmm2
@@ -460,12 +464,12 @@ Loop_start_2:
 	movaps		%xmm5, %xmm2
 	movaps		%xmm0, %xmm3
 	movaps		%xmm0, %xmm4
-	mulps		ASM_NAME(scale_s32), %xmm5
-	mulps		ASM_NAME(scale_s32), %xmm0
-	cmpnleps	ASM_NAME(maxmin_s32), %xmm1
-	cmpltps		ASM_NAME(maxmin_s32)+16, %xmm2
-	cmpnleps	ASM_NAME(maxmin_s32), %xmm3
-	cmpltps		ASM_NAME(maxmin_s32)+16, %xmm4
+	mulps		LOCAL_VAR(scale_s32), %xmm5
+	mulps		LOCAL_VAR(scale_s32), %xmm0
+	cmpnleps	LOCAL_VAR(maxmin_s32), %xmm1
+	cmpltps		16+LOCAL_VAR(maxmin_s32), %xmm2
+	cmpnleps	LOCAL_VAR(maxmin_s32), %xmm3
+	cmpltps		16+LOCAL_VAR(maxmin_s32), %xmm4
 	cvtps2pi	%xmm5, %mm0
 	cvtps2pi	%xmm0, %mm1
 	cvtps2pi	%xmm1, %mm2
@@ -518,7 +522,7 @@ Loop_start_2:
 	
 	leal		32(SAMPLES), SAMPLES
 	decl		%ecx
-	jnz			Loop_start_2
+	jnz			1b
 	
 	pshufw		$0xee, MMREG_CLIP, %mm0
 	paddw		MMREG_CLIP, %mm0

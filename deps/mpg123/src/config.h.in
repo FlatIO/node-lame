@@ -10,6 +10,12 @@
 /* Define if building universal (internal helper macro) */
 #undef AC_APPLE_UNIVERSAL_BUILD
 
+/* Define if .balign is present. */
+#undef ASMALIGN_BALIGN
+
+/* Define if .align just takes byte count. */
+#undef ASMALIGN_BYTE
+
 /* Define if .align takes 3 for alignment of 2^3=8 bytes instead of 8. */
 #undef ASMALIGN_EXP
 
@@ -24,6 +30,9 @@
 
 /* Define if building with dynamcally linked libmpg123 */
 #undef DYNAMIC_BUILD
+
+/* Use EFBIG as substitude for EOVERFLOW, mingw.org may lack the latter */
+#undef EOVERFLOW
 
 /* Define if FIFO support is enabled. */
 #undef FIFO
@@ -73,8 +82,20 @@
 /* Define to 1 if you have the <CUlib.h> header file. */
 #undef HAVE_CULIB_H
 
+/* Define to 1 if you have the <dirent.h> header file. */
+#undef HAVE_DIRENT_H
+
+/* Define to 1 if you have the `dlclose' function. */
+#undef HAVE_DLCLOSE
+
 /* Define to 1 if you have the <dlfcn.h> header file. */
 #undef HAVE_DLFCN_H
+
+/* Define to 1 if you have the `dlopen' function. */
+#undef HAVE_DLOPEN
+
+/* Define to 1 if you have the `dlsym' function. */
+#undef HAVE_DLSYM
 
 /* Define if getaddrinfo accepts the AI_ADDRCONFIG flag */
 #undef HAVE_GAI_ADDRCONFIG
@@ -108,9 +129,6 @@
 
 /* Define to 1 if you have the <locale.h> header file. */
 #undef HAVE_LOCALE_H
-
-/* Define if libltdl is available */
-#undef HAVE_LTDL
 
 /* Define to 1 if you have the <machine/soundcard.h> header file. */
 #undef HAVE_MACHINE_SOUNDCARD_H
@@ -181,9 +199,6 @@
 /* Define to 1 if you have the <stdlib.h> header file. */
 #undef HAVE_STDLIB_H
 
-/* Define to 1 if you have the `strdup' function. */
-#undef HAVE_STRDUP
-
 /* Define to 1 if you have the `strerror' function. */
 #undef HAVE_STRERROR
 
@@ -210,6 +225,9 @@
 
 /* Define to 1 if you have the <sys/resource.h> header file. */
 #undef HAVE_SYS_RESOURCE_H
+
+/* Define to 1 if you have the <sys/select.h> header file. */
+#undef HAVE_SYS_SELECT_H
 
 /* Define to 1 if you have the <sys/signal.h> header file. */
 #undef HAVE_SYS_SIGNAL_H
@@ -253,16 +271,21 @@
 /* Define if IPV6 support is enabled. */
 #undef IPV6
 
-/* Define this to the size of long type in bits, used for LFS small/native
-   alias functions. */
+/* Define this to the size of native offset type in bits, used for LFS alias
+   functions. */
 #undef LFS_ALIAS_BITS
 
-/* Define to the sub-directory in which libtool stores uninstalled libraries.
-   */
+/* Define to the extension used for runtime loadable modules, say, ".so". */
+#undef LT_MODULE_EXT
+
+/* Define to the sub-directory where libtool stores uninstalled libraries. */
 #undef LT_OBJDIR
 
-/* The suffix for module files. */
-#undef MODULE_FILE_SUFFIX
+/* Define to the shared library suffix, say, ".dylib". */
+#undef LT_SHARED_EXT
+
+/* Define to the shared archive member specification, say "(shr.o)". */
+#undef LT_SHARED_LIB_MEMBER
 
 /* Define if network support is enabled. */
 #undef NETWORK
@@ -278,6 +301,9 @@
 
 /* Define to disable downsampled decoding. */
 #undef NO_DOWNSAMPLE
+
+/* Define to disable equalizer. */
+#undef NO_EQUALIZER
 
 /* Define to disable error messages in combination with a return value (the
    return is left intact). */
@@ -312,6 +338,9 @@
 
 /* Define to disable string functions. */
 #undef NO_STRING
+
+/* Define for post-processed 32 bit formats. */
+#undef NO_SYNTH32
 
 /* Define to disable warning messages. */
 #undef NO_WARNING
@@ -360,6 +389,12 @@
 
 /* Define if modules are enabled */
 #undef USE_MODULES
+
+/* Define for new Huffman decoding scheme. */
+#undef USE_NEW_HUFFTABLE
+
+/* Define to use yasm for assemble AVX sources. */
+#undef USE_YASM_FOR_AVX
 
 /* Version number of package */
 #undef VERSION
@@ -416,6 +451,12 @@
 
 /* Define to `int' if <sys/types.h> does not define. */
 #undef int32_t
+
+/* Define to `long long' if <sys/types.h> does not define. */
+#undef int64_t
+
+/* Define to the native offset type (long or actually off_t). */
+#undef lfs_alias_t
 
 /* Define to `long int' if <sys/types.h> does not define. */
 #undef off_t

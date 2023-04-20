@@ -11,18 +11,17 @@
 #include <stdlib.h>
 #include <sys/types.h>
 
-typedef long ssize_t;
-
 // Needed for Visual Studio versions before VS 2010.
 #if (_MSC_VER < 1600)
 typedef __int32 int32_t;
 typedef unsigned __int32 uint32_t;
-#else
-#include <stdint.h>
-#endif
-
 #define PRIiMAX "I64i"
 typedef __int64 intmax_t;
+#else
+#include <stdint.h>
+#include <inttypes.h>
+#endif
+
 // ftell returns long, _ftelli64 returns __int64
 // off_t is long, not __int64, use ftell
 #define ftello ftell
@@ -36,8 +35,8 @@ extern "C" {
 
 	// Wrapper around mpg123_open that supports path names with unicode
 	// characters
-	EXPORT int mpg123_topen(mpg123_handle *fr, const _TCHAR *path);
-	EXPORT int mpg123_tclose(mpg123_handle *fr);
+	MPG123_EXPORT int mpg123_topen(mpg123_handle *fr, const _TCHAR *path);
+	MPG123_EXPORT int mpg123_tclose(mpg123_handle *fr);
 
 #ifdef __cplusplus
 }

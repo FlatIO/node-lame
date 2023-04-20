@@ -14,6 +14,11 @@ case $build_type in
     strip=strip
     hostopt=
   ;;
+  x86-cross)
+    decoder=x86
+    strip=i686-w64-mingw32-strip
+    hostopt="--host=i686-w64-mingw32 --build=`./build/config.guess`"
+  ;;
   x86_64-cross)
     decoder=x86-64
     strip=x86_64-w64-mingw32-strip
@@ -29,7 +34,7 @@ temp="$PWD/tmp"
 final="$PWD/releases"
 txt="README COPYING NEWS"
 # let's try with modules
-opts=""
+opts="LDFLAGS=-static-libgcc"
 #opts="--with-audio=win32 --disable-modules"
 
 # Get the version for the build from configure.ac .
@@ -94,10 +99,15 @@ mpg123_build()
 	sleep 5 &&
 	if test -e Makefile; then make clean; fi &&
 	rm -rvf $tmp &&
-	./configure $hostopt --prefix=$tmp --with-module-suffix=.dll $myopts --with-cpu=$cpu && make && make install &&
+	# We do not like dependency to libgcc_s_dw2-1.dll.
+	# Libout123 somehow pulls in that one. Not sure if avoiding
+	# it is an option.
+	./configure $hostopt \
+	  --prefix=$tmp $myopts --with-cpu=$cpu &&
+	make && make install &&
 	rm -rf "$final/$name" &&
 	mkdir  "$final/$name" &&
-	cp -v "$tmp/bin/mpg123.exe" "$final/$name" &&
+	cp -v "$tmp/bin/"*.exe "$final/$name" &&
 	if test "$debug" = y; then
 		echo "Not stripping the debug build..."
 	else
@@ -106,8 +116,8 @@ mpg123_build()
 	if test "$stat" = "y"; then
 		echo "No DLL there..."
 	else
-		cp -v "$tmp/bin/libmpg123"*.dll "$tmp/include/mpg123.h" "$final/$name" &&
-		cp -v "src/libmpg123/.libs/libmpg123"*.dll.def "$final/$name" &&
+		cp -v "$tmp"/bin/lib*123*.dll "$tmp"/include/*123*.h "$final/$name" &&
+		cp -v src/lib*123/.libs/lib*123*.dll.def "$final/$name" &&
 		if test "$debug" = y; then
 			echo "Not stripping the debug build..."
 		else
@@ -134,4 +144,4 @@ prepare_unix2dos &&
 mpg123_build $decoder y n &&
 mpg123_build $decoder n n &&
 mpg123_build $decoder n y &&
-echo "Hurray! Note: Please do not forget to copy the libltdl DLL from MSYS to the dynamic build directories... " || echo "Bleh..."
+echo "Hurray!" || echo "Bleh..."

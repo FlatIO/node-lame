@@ -34,7 +34,7 @@
 	Now, start off easy... translate simple API calls.
 	I need to deal with these here:
 perl -ne '
-if(/^\s*EXPORT\s+(\S+)\s+(mpg123_\S+)\((.*)\);\s*$/)
+if(/^\s*MPG123_EXPORT\s+(\S+)\s+(mpg123_\S+)\((.*)\);\s*$/)
 {
 	$type = $1;
 	$name = $2;
@@ -465,6 +465,23 @@ int attribute_align_arg mpg123_position(mpg123_handle *mh, long frame_offset, lo
 
 
 	return MPG123_OK;
+}
+
+#undef mpg123_framelength
+/* off_t mpg123_framelength(mpg123_handle *mh); */
+long attribute_align_arg mpg123_framelength(mpg123_handle *mh)
+{
+	long val;
+	off_t largeval;
+
+	largeval = MPG123_LARGENAME(mpg123_framelength)(mh);
+	val = largeval;
+	if(val != largeval)
+	{
+		mh->err = MPG123_LFS_OVERFLOW;
+		return MPG123_ERR;
+	}
+	return val;
 }
 
 #undef mpg123_length

@@ -26,7 +26,7 @@
 	.data
 #endif
 	ALIGN32
-ASM_NAME(scale_sse):
+scale_sse:
 	.long   939524096
 	.long   939524096
 	.long   939524096
@@ -48,11 +48,15 @@ ASM_NAME(synth_1to1_real_sse_asm):
 	
 	leal		64(WINDOW), WINDOW
 	subl		%eax, WINDOW
+	
+	#undef _EBX_
+	#define _EBX_ %eax
+	GET_GOT
 
 	movl		$4, %ecx
 	
 	ALIGN16
-Loop_start_1:
+1:
 	movups		(WINDOW), %xmm0
 	movups		16(WINDOW), %xmm1
 	movups		32(WINDOW), %xmm2
@@ -127,7 +131,7 @@ Loop_start_1:
 	
 	movups		(SAMPLES), %xmm1
 	movups		16(SAMPLES), %xmm2
-	mulps		ASM_NAME(scale_sse), %xmm0
+	mulps		LOCAL_VAR(scale_sse), %xmm0
 	shufps		$0xdd, %xmm2, %xmm1
 	movaps		%xmm0, %xmm2
 	unpcklps	%xmm1, %xmm0
@@ -137,12 +141,12 @@ Loop_start_1:
 	
 	leal		32(SAMPLES), SAMPLES
 	decl		%ecx
-	jnz			Loop_start_1
+	jnz			1b
 	
 	movl		$4, %ecx
 	
 	ALIGN16
-Loop_start_2:
+1:
 	movups		(WINDOW), %xmm0
 	movups		16(WINDOW), %xmm1
 	movups		32(WINDOW), %xmm2
@@ -217,7 +221,7 @@ Loop_start_2:
 	
 	movups		(SAMPLES), %xmm1
 	movups		16(SAMPLES), %xmm2
-	mulps		ASM_NAME(scale_sse), %xmm0
+	mulps		LOCAL_VAR(scale_sse), %xmm0
 	shufps		$0xdd, %xmm2, %xmm1
 	movaps		%xmm0, %xmm2
 	unpcklps	%xmm1, %xmm0
@@ -227,10 +231,10 @@ Loop_start_2:
 	
 	leal		32(SAMPLES), SAMPLES
 	decl		%ecx
-	jnz			Loop_start_2
+	jnz			1b
 	
 	xorl		%eax, %eax
-	
+
 	popl		%esi
 	popl		%ebx
 	movl		%ebp, %esp

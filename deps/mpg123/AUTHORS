@@ -3,13 +3,26 @@ There are names and email addresses listed. Please use these addresses only to c
 You are explicitly not allowed to send them unwanted business offers or to question the quality of their sex life.
 --------------------
 
+Being on the list of contributing authors not necessarily means that there
+is significant copyright in parts of the source code. There are obviously
+contributions of differing complexity. I try to mention people who motivated
+changes at least by suggesting some definite code changes, even if their
+code did not enter the mpg123 source verbatim. Trivial changes like pointing
+out ovbious syntax errors that make compilers cry do not land here.
+
+--------------------
+
 Current maintainers with various sorts of contributions:
 	Thomas Orgis <thomas@orgis.org>
 	Patrick Dehne <patrick@steidle.net>
 	Jonathan Yong <10walls@gmail.com>
+	Taihei Momma <tmkk@mac.com>
 
 Co-initiator of the revived mpg123 project, but not that involved anymore:
 	Nicholas J Humfrey <njh@ecs.soton.ac.uk>
+
+Special thanks go to Taihei, the person who keeps the assembly optimisations alive
+and takes care of portability to OSX/iOS platforms.
 
 Generic address pointing to the current maintainer (hopefully still works in future in case maintainership will change again): <maintainer@mpg123.org>
 
@@ -17,8 +30,20 @@ The creator: Michael Hipp (email: hippm@informatik.uni-tuebingen.de - please bot
 
 Contributions/ideas Thomas Orgis era (includes backports from mhipp trunk):
 
+Won-Kyu Park <wkpark@gmail.com>: patch to get rid of asm textrels (x86 PIC)
+Michael Weiser <michaelweiser@users.sf.net>: update of coreaudio output to AudioComponents API
+Bent Bisballe Nyeng <bbn@dynastrom.com>: patch for MPG123_NO_PEEK_END and MPG123_FORCE_SEEKABLE
+Eric S. Raymond <esr@thyrsus.com>: man page fixes
+Tobias Weber <tobiw@suprafluid.com>: patch for --disable-equalizer
+Hans de Goede <j.w.r.degoede@gmail.com>: patch to skip APE tags
+Stephan Vedder <stephan.vedder@gmail.com>: MSVC++ 2013 port update
+Rajeev V. Pillai <rajeevvp@users.sf.net>: pointing out/patching issues in HTTP code and behaviour of mpg123 remote/terminal control
+Jarno Lehtinen <lehtinen@sci.fi>: tinyalsa output
+Anthony Wells <borgboyone@yahoo.com>: initial version of ID3v2 APIC patch
+David Wohlferd <limegreensocks@yahoo.com>: Win32 WaveOut buffer destructor fix.
+Mike Gorchak <mike.gorchak.qnx@gmail.com>: QNX native audio output (QSA)
 Dan McGee <dpmcgee@gmail.com>: various patches (also for test suite)
-Jonathan Yong (jon_y) <10walls@gmail.com>: win32 hacking
+Jonathan Yong (jon_y) <10walls@gmail.com>: win32 hacking, win32 wasapi audio.
 Malcolm Boczek <MBoczek@terraindustries.com>: Common language runtime wrapper
 Elbert Pol (TeLLie) <elbert.pol@gmail.com>: OS/2 port fixup
 Jeroen Valkonet <jvalkon@xs4all.nl>: motivate pitch control, suggestive patch for pitch command in generic control interface

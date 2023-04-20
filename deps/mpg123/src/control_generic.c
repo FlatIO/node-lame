@@ -7,27 +7,41 @@
 	reworked by Thomas Orgis - it was the entry point for eventually becoming maintainer...
 */
 
+#include "config.h"
+/* _BSD_SOURCE needed for setlinebuf, erm, but that's deprecated
+   so trying _DEFAULT_SOURCE */
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE
+#endif
+/* Defining that after _DEFAULT_SOURCE seems fine and is still
+   needed for older glibc. I guess I need a configure check
+   about setlinebuf()/setvbuf() if I really care about old
+   systems. */
+#ifndef _BSD_SOURCE
+#define _BSD_SOURCE
+#endif
+#include "compat.h"
+
 #include "mpg123app.h"
+#include "out123.h"
 #include <stdarg.h>
 #include <ctype.h>
 #if !defined (WIN32) || defined (__CYGWIN__)
 #include <sys/wait.h>
 #include <sys/socket.h>
 #endif
-#include <fcntl.h>
 #include <errno.h>
 #include <string.h>
 
 #include "common.h"
-#include "buffer.h"
 #include "genre.h"
 #include "playlist.h"
+#include "audio.h"
 #define MODE_STOPPED 0
 #define MODE_PLAYING 1
 #define MODE_PAUSED 2
 
-extern int buffer_pid;
-extern audio_output_t *ao;
+extern out123_handle *ao;
 
 #ifdef FIFO
 #include <sys/stat.h>
@@ -101,7 +115,7 @@ void generic_sendstat (mpg123_handle *fr)
 {
 	off_t current_frame, frames_left;
 	double current_seconds, seconds_left;
-	if(!mpg123_position(fr, 0, xfermem_get_usedspace(buffermem), &current_frame, &frames_left, &current_seconds, &seconds_left))
+	if(!mpg123_position(fr, 0, out123_buffered(ao), &current_frame, &frames_left, &current_seconds, &seconds_left))
 	generic_sendmsg("F %"OFF_P" %"OFF_P" %3.2f %3.2f", (off_p)current_frame, (off_p)frames_left, current_seconds, seconds_left);
 }
 
@@ -214,11 +228,7 @@ void generic_sendinfo (char *filename)
 
 static void generic_load(mpg123_handle *fr, char *arg, int state)
 {
-	if(param.usebuffer)
-	{
-		buffer_resync();
-		if(mode == MODE_PAUSED && state != MODE_PAUSED) buffer_start();
-	}
+	out123_drop(ao);
 	if(mode != MODE_STOPPED)
 	{
 		close_track();
@@ -234,7 +244,6 @@ static void generic_load(mpg123_handle *fr, char *arg, int state)
 	if(mpg123_meta_check(fr) & MPG123_NEW_ID3)
 	{
 		generic_sendinfoid3(fr);
-		mpg123_meta_free(fr);
 	}
 	else generic_sendinfo(arg);
 
@@ -268,6 +277,8 @@ static void generic_loadlist(mpg123_handle *fr, char *arg)
 	/* Now got the plain playlist path in arg. On to evil manupulation of mpg123's playlist code. */
 	param.listname = arg;
 	param.listentry = 0; /* The playlist shall not filter. */
+	param.loop = 1;
+	param.shuffle = 0;
 	prepare_playlist(0, NULL);
 	while((file = get_next_file()))
 	{
@@ -312,7 +323,7 @@ int control_generic (mpg123_handle *fr)
 #endif
 	/* the command behaviour is different, so is the ID */
 	/* now also with version for command availability */
-	fprintf(outstream, "@R MPG123 (ThOr) v7\n");
+	fprintf(outstream, "@R MPG123 (ThOr) v8\n");
 #ifdef FIFO
 	if(param.fifo)
 	{
@@ -355,13 +366,13 @@ int control_generic (mpg123_handle *fr)
 			if (n == 0) {
 				if (!play_frame())
 				{
+					out123_pause(ao);
 					/* When the track ended, user may want to keep it open (to seek back),
 					   so there is a decision between stopping and pausing at the end. */
 					if(param.keep_open)
 					{
 						mode = MODE_PAUSED;
 						/* Hm, buffer should be stopped already, shouldn't it? */
-						if(param.usebuffer) buffer_stop();
 						generic_sendmsg("P 1");
 					}
 					else
@@ -471,11 +482,11 @@ int control_generic (mpg123_handle *fr)
 					{	
 						if (mode == MODE_PLAYING) {
 							mode = MODE_PAUSED;
-							if(param.usebuffer) buffer_stop();
+							out123_pause(ao);
 							generic_sendmsg("P 1");
 						} else {
 							mode = MODE_PLAYING;
-							if(param.usebuffer) buffer_start();
+							out123_continue(ao);
 							generic_sendmsg("P 2");
 						}
 					} else generic_sendmsg("P 0");
@@ -485,11 +496,9 @@ int control_generic (mpg123_handle *fr)
 				/* STOP */
 				if (!strcasecmp(comstr, "S") || !strcasecmp(comstr, "STOP")) {
 					if (mode != MODE_STOPPED) {
-						if(param.usebuffer)
-						{
-							buffer_stop();
-							buffer_resync();
-						}
+						/* Do we want to drop here? */
+						out123_drop(ao);
+						out123_pause(ao);
 						close_track();
 						mode = MODE_STOPPED;
 						generic_sendmsg("P 0");
@@ -533,6 +542,17 @@ int control_generic (mpg123_handle *fr)
 					continue;
 				}
 
+				if(!strcasecmp(comstr, "FORMAT"))
+				{
+					long rate;
+					int ch;
+					int ret = mpg123_getformat2(fr, &rate, &ch, NULL, 0);
+					/* I need to have portable printf specifiers that do not truncate the type... more autoconf... */
+					if(ret < 0) generic_sendmsg("E %s", mpg123_strerror(fr));
+					else generic_sendmsg("FORMAT %li %i", rate, ch);
+					continue;
+				}
+
 				if(!strcasecmp(comstr, "SHOWEQ"))
 				{
 					int i;
@@ -569,7 +589,7 @@ int control_generic (mpg123_handle *fr)
 					generic_sendmsg("H HELP/H: command listing (LONG/SHORT forms), command case insensitve");
 					generic_sendmsg("H LOAD/L <trackname>: load and start playing resource <trackname>");
 					generic_sendmsg("H LOADPAUSED/LP <trackname>: load but do not start playing resource <trackname>");
-					generic_sendmsg("H LOADLIST <entry> <url>: load a playlist from given <url>, and display its entries, optionally load and play one of these specificed by the integer <entry> (<0: just list, 0: play last track, >0:play track with that position in list)");
+					generic_sendmsg("H LOADLIST/LL <entry> <url>: load a playlist from given <url>, and display its entries, optionally load and play one of these specificed by the integer <entry> (<0: just list, 0: play last track, >0:play track with that position in list)");
 					generic_sendmsg("H PAUSE/P: pause playback");
 					generic_sendmsg("H STOP/S: stop playback (closes file)");
 					generic_sendmsg("H JUMP/J <frame>|<+offset>|<-offset>|<[+|-]seconds>s: jump to mpeg frame <frame> or change position by offset, same in seconds if number followed by \"s\"");
@@ -581,11 +601,12 @@ int control_generic (mpg123_handle *fr)
 					generic_sendmsg("H SEEK/K <sample>|<+offset>|<-offset>: jump to output sample position <samples> or change position by offset");
 					generic_sendmsg("H SCAN: scan through the file, building seek index");
 					generic_sendmsg("H SAMPLE: print out the sample position and total number of samples");
+					generic_sendmsg("H FORMAT: print out sampling rate in Hz and channel count");
 					generic_sendmsg("H SEQ <bass> <mid> <treble>: simple eq setting...");
 					generic_sendmsg("H PITCH <[+|-]value>: adjust playback speed (+0.01 is 1 %% faster)");
 					generic_sendmsg("H SILENCE: be silent during playback (meaning silence in text form)");
 					generic_sendmsg("H STATE: Print auxiliary state info in several lines (just try it to see what info is there).");
-					generic_sendmsg("H TAG/T: Print all available (ID3) tag info, for ID3v2 that gives output of all collected text fields, using the ID3v2.3/4 4-character names.");
+					generic_sendmsg("H TAG/T: Print all available (ID3) tag info, for ID3v2 that gives output of all collected text fields, using the ID3v2.3/4 4-character names. NOTE: ID3v2 data will be deleted on non-forward seeks.");
 					generic_sendmsg("H    The output is multiple lines, begin marked by \"@T {\", end by \"@T }\".");
 					generic_sendmsg("H    ID3v1 data is like in the @I info lines (see below), just with \"@T\" in front.");
 					generic_sendmsg("H    An ID3v2 data field is introduced via ([ ... ] means optional):");
@@ -613,6 +634,7 @@ int control_generic (mpg123_handle *fr)
 
 				if (cmd && strlen(cmd) && arg && strlen(arg))
 				{
+#ifndef NO_EQUALIZER
 					/* Simple EQ: SEQ <BASS> <MID> <TREBLE>  */
 					if (!strcasecmp(cmd, "SEQ")) {
 						double b,m,t;
@@ -661,11 +683,13 @@ int control_generic (mpg123_handle *fr)
 
 						continue;
 					}
-
+#endif
 					/* SEEK to a sample offset */
 					if(!strcasecmp(cmd, "K") || !strcasecmp(cmd, "SEEK"))
 					{
 						off_t soff;
+						off_t oldpos;
+						off_t newpos;
 						char *spos = arg;
 						int whence = SEEK_SET;
 						if(mode == MODE_STOPPED)
@@ -673,6 +697,7 @@ int control_generic (mpg123_handle *fr)
 							generic_sendmsg("E No track loaded!");
 							continue;
 						}
+						oldpos = mpg123_tell(fr);
 
 						soff = (off_t) atobigint(spos);
 						if(spos[0] == '-' || spos[0] == '+') whence = SEEK_CUR;
@@ -681,15 +706,19 @@ int control_generic (mpg123_handle *fr)
 							generic_sendmsg("E Error while seeking: %s", mpg123_strerror(fr));
 							mpg123_seek(fr, 0, SEEK_SET);
 						}
-						if(param.usebuffer) buffer_resync();
+						out123_drop(ao);
 
-						generic_sendmsg("K %li", (long)mpg123_tell(fr));
+						newpos = mpg123_tell(fr);
+						if(newpos <= oldpos) mpg123_meta_free(fr);
+
+						generic_sendmsg("K %"OFF_P, (off_p)newpos);
 						continue;
 					}
 					/* JUMP */
 					if (!strcasecmp(cmd, "J") || !strcasecmp(cmd, "JUMP")) {
 						char *spos;
 						off_t offset;
+						off_t oldpos;
 						double secs;
 
 						spos = arg;
@@ -698,6 +727,7 @@ int control_generic (mpg123_handle *fr)
 							generic_sendmsg("E No track loaded!");
 							continue;
 						}
+						oldpos = framenum;
 
 						if(spos[strlen(spos)-1] == 's' && sscanf(arg, "%lf", &secs) == 1) offset = mpg123_timeframe(fr, secs);
 						else offset = atol(spos);
@@ -710,8 +740,9 @@ int control_generic (mpg123_handle *fr)
 							generic_sendmsg("E Error while seeking");
 							mpg123_seek_frame(fr, 0, SEEK_SET);
 						}
-						if(param.usebuffer)	buffer_resync();
+						out123_drop(ao);
 
+						if(framenum <= oldpos) mpg123_meta_free(fr);
 						generic_sendmsg("J %d", framenum);
 						continue;
 					}
@@ -753,7 +784,7 @@ int control_generic (mpg123_handle *fr)
 					/* LOAD - actually play */
 					if (!strcasecmp(cmd, "L") || !strcasecmp(cmd, "LOAD")){ generic_load(fr, arg, MODE_PLAYING); continue; }
 
-					if (!strcasecmp(cmd, "L") || !strcasecmp(cmd, "LOADLIST")){ generic_loadlist(fr, arg); continue; }
+					if (!strcasecmp(cmd, "LL") || !strcasecmp(cmd, "LOADLIST")){ generic_loadlist(fr, arg); continue; }
 
 					/* LOADPAUSED */
 					if (!strcasecmp(cmd, "LP") || !strcasecmp(cmd, "LOADPAUSED")){ generic_load(fr, arg, MODE_PAUSED); continue; }
@@ -785,14 +816,6 @@ int control_generic (mpg123_handle *fr)
 	} /* end main (alive) loop */
 	debug("going to end");
 	/* quit gracefully */
-#ifndef NOXFERMEM
-	if (param.usebuffer) {
-		kill(buffer_pid, SIGINT);
-		xfermem_done_writer(buffermem);
-		waitpid(buffer_pid, NULL, 0);
-		xfermem_done(buffermem);
-	}
-#endif
 	debug("closing control");
 #ifdef FIFO
 #if WANT_WIN32_FIFO

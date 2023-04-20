@@ -10,6 +10,7 @@
 #define _MPG123_TERM_H_
 
 #include "mpg123app.h"
+#include "audio.h"
 
 #ifdef HAVE_TERMIOS
 
@@ -56,9 +57,14 @@
 #define MPG123_PITCH_DOWN_KEY  'x'
 #define MPG123_PITCH_BDOWN_KEY 'X'
 #define MPG123_PITCH_ZERO_KEY  'w'
+#define MPG123_BOOKMARK_KEY    'k'
 /* This counts as "undocumented" and can disappear */
 #define MPG123_FRAME_INDEX_KEY 'i'
 #define MPG123_VARIOUS_INFO_KEY 'I'
+
+#define MPG123_PREV_DIR_KEY '['
+#define MPG123_NEXT_DIR_KEY ']'
+
 /* The normal and big pitch adjustment done on key presses. */
 #define MPG123_PITCH_VAL 0.001
 #define MPG123_PITCH_BVAL 0.01
@@ -71,9 +77,10 @@
 #define MPG123_TERM_USR1 "s"
 #define MPG123_TERM_USR2 "f"
 
+
 void term_init(void);
-off_t term_control(mpg123_handle *mh, audio_output_t *ao);
-void term_restore(void);
+void term_exit(void);
+off_t term_control(mpg123_handle *mh, out123_handle *ao);
 void term_hint(void); /* Print a message hinting at terminal usage. */
 
 #endif

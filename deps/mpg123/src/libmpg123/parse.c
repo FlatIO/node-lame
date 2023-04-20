@@ -1,7 +1,7 @@
 /*
 	parse: spawned from common; clustering around stream/frame parsing
 
-	copyright ?-2012 by the mpg123 project - free software under the terms of the LGPL 2.1
+	copyright ?-2014 by the mpg123 project - free software under the terms of the LGPL 2.1
 	see COPYING and AUTHORS files in distribution or http://mpg123.org
 	initially written by Michael Hipp & Thomas Orgis
 */
@@ -108,283 +108,333 @@ static int head_check(unsigned long head)
 	}
 }
 
+/* This is moderately sized buffers. Int offset is enough. */
+static unsigned long bit_read_long(unsigned char *buf, int *offset)
+{
+	unsigned long val =  /* 32 bit value */
+		(((unsigned long) buf[*offset])   << 24)
+	|	(((unsigned long) buf[*offset+1]) << 16)
+	|	(((unsigned long) buf[*offset+2]) << 8)
+	|	 ((unsigned long) buf[*offset+3]);
+	*offset += 4;
+	return val;
+}
+
+static unsigned short bit_read_short(unsigned char *buf, int *offset)
+{
+	unsigned short val = /* 16 bit value */
+		(((unsigned short) buf[*offset]  ) << 8)
+	|	 ((unsigned short) buf[*offset+1]);
+	*offset += 2;
+	return val;
+}
+
 static int check_lame_tag(mpg123_handle *fr)
 {
+	int i;
+	unsigned long xing_flags;
+	unsigned long long_tmp;
 	/*
 		going to look for Xing or Info at some position after the header
 		                                   MPEG 1  MPEG 2/2.5 (LSF)
 		Stereo, Joint Stereo, Dual Channel  32      17
 		Mono                                17       9
-
-		Also, how to avoid false positives? I guess I should interpret more of the header to rule that out(?).
-		I hope that ensuring all zeros until tag start is enough.
 	*/
-	int lame_offset = (fr->stereo == 2) ? (fr->lsf ? 17 : 32 ) : (fr->lsf ? 9 : 17);
+	int lame_offset = (fr->stereo == 2)
+	? (fr->lsf ? 17 : 32)
+	: (fr->lsf ? 9  : 17);
 
-	if(fr->p.flags & MPG123_IGNORE_INFOFRAME) return 0;
+	if(fr->p.flags & MPG123_IGNORE_INFOFRAME) goto check_lame_tag_no;
 
-	/* Note: CRC or not, that does not matter here. */
-	if(fr->framesize >= 120+lame_offset) /* traditional Xing header is 120 bytes */
+	debug("do we have lame tag?");
+	/*
+		Note: CRC or not, that does not matter here.
+		But, there is any combination of Xing flags in the wild. There are headers
+		without the search index table! I cannot assume a reasonable minimal size
+		for the actual data, have to check if each byte of information is present.
+		But: 4 B Info/Xing + 4 B flags is bare minimum.
+	*/
+	if(fr->framesize < lame_offset+8) goto check_lame_tag_no;
+
+	/* only search for tag when all zero before it (apart from checksum) */
+	for(i=2; i < lame_offset; ++i) if(fr->bsbuf[i] != 0) goto check_lame_tag_no;
+
+	debug("possibly...");
+	if
+	(
+		   (fr->bsbuf[lame_offset]   == 'I')
+		&& (fr->bsbuf[lame_offset+1] == 'n')
+		&& (fr->bsbuf[lame_offset+2] == 'f')
+		&& (fr->bsbuf[lame_offset+3] == 'o')
+	)
 	{
-		int i;
-		int lame_type = 0;
-		debug("do we have lame tag?");
-		/* only search for tag when all zero before it (apart from checksum) */
-		for(i=2; i < lame_offset; ++i) if(fr->bsbuf[i] != 0) break;
-		if(i == lame_offset)
+		/* We still have to see what there is */
+	}
+	else if
+	(
+		   (fr->bsbuf[lame_offset]   == 'X')
+		&& (fr->bsbuf[lame_offset+1] == 'i')
+		&& (fr->bsbuf[lame_offset+2] == 'n')
+		&& (fr->bsbuf[lame_offset+3] == 'g')
+	)
+	{
+		fr->vbr = MPG123_VBR; /* Xing header means always VBR */
+	}
+	else goto check_lame_tag_no;
+
+	/* we have one of these headers... */
+	if(VERBOSE2) fprintf(stderr, "Note: Xing/Lame/Info header detected\n");
+	lame_offset += 4; 
+	xing_flags = bit_read_long(fr->bsbuf, &lame_offset);
+	debug1("Xing: flags 0x%08lx", xing_flags);
+
+	/* From now on, I have to carefully check if the announced data is actually
+	   there! I'm always returning 'yes', though.  */
+	#define check_bytes_left(n) if(fr->framesize < lame_offset+n) \
+		goto check_lame_tag_yes
+	if(xing_flags & 1) /* total bitstream frames */
+	{
+		check_bytes_left(4); long_tmp = bit_read_long(fr->bsbuf, &lame_offset);
+		if(fr->p.flags & MPG123_IGNORE_STREAMLENGTH)
 		{
-			debug("possibly...");
-			if
-			(
-					   (fr->bsbuf[lame_offset] == 'I')
-				&& (fr->bsbuf[lame_offset+1] == 'n')
-				&& (fr->bsbuf[lame_offset+2] == 'f')
-				&& (fr->bsbuf[lame_offset+3] == 'o')
-			)
-			{
-				lame_type = 1; /* We still have to see what there is */
-			}
-			else if
-			(
-					   (fr->bsbuf[lame_offset] == 'X')
-				&& (fr->bsbuf[lame_offset+1] == 'i')
-				&& (fr->bsbuf[lame_offset+2] == 'n')
-				&& (fr->bsbuf[lame_offset+3] == 'g')
-			)
-			{
-				lame_type = 2;
-				fr->vbr = MPG123_VBR; /* Xing header means always VBR */
-			}
-			if(lame_type)
-			{
-				unsigned long xing_flags;
-
-				/* we have one of these headers... */
-				if(VERBOSE2) fprintf(stderr, "Note: Xing/Lame/Info header detected\n");
-				/* now interpret the Xing part, I have 120 bytes total for sure */
-				/* there are 4 bytes for flags, but only the last byte contains known ones */
-				lame_offset += 4; /* now first byte after Xing/Name */
-				/* 4 bytes dword for flags */
-				#define make_long(a, o) ((((unsigned long) a[o]) << 24) | (((unsigned long) a[o+1]) << 16) | (((unsigned long) a[o+2]) << 8) | ((unsigned long) a[o+3]))
-				/* 16 bit */
-				#define make_short(a,o) ((((unsigned short) a[o]) << 8) | ((unsigned short) a[o+1]))
-				xing_flags = make_long(fr->bsbuf, lame_offset);
-				lame_offset += 4;
-				debug1("Xing: flags 0x%08lx", xing_flags);
-				if(xing_flags & 1) /* frames */
-				{
-					if(fr->p.flags & MPG123_IGNORE_STREAMLENGTH)
-					{
-						if(VERBOSE3)
-						fprintf(stderr, "Note: Ignoring Xing frames because of MPG123_IGNORE_STREAMLENGTH\n");
-					}
-					else
-					{
-						fr->track_frames = (off_t) make_long(fr->bsbuf, lame_offset);
-						if(fr->track_frames > TRACK_MAX_FRAMES) fr->track_frames = 0; /* endless stream? */
+			if(VERBOSE3) fprintf(stderr
+			,	"Note: Ignoring Xing frames because of MPG123_IGNORE_STREAMLENGTH\n");
+		}
+		else
+		{
+			/* Check for endless stream, but: TRACK_MAX_FRAMES sensible at all? */
+			fr->track_frames = long_tmp > TRACK_MAX_FRAMES ? 0 : (off_t) long_tmp;
 #ifdef GAPLESS
-						/* All or nothing: Only if encoder delay/padding is known we'll cut samples for gapless. */
-						if(fr->p.flags & MPG123_GAPLESS)
-						frame_gapless_init(fr, fr->track_frames, 0, 0);
+			/* All or nothing: Only if encoder delay/padding is known, we'll cut
+			   samples for gapless. */
+			if(fr->p.flags & MPG123_GAPLESS)
+			frame_gapless_init(fr, fr->track_frames, 0, 0);
 #endif
-						if(VERBOSE3) fprintf(stderr, "Note: Xing: %lu frames\n", (long unsigned)fr->track_frames);
-					}
-
-					lame_offset += 4;
-				}
-				if(xing_flags & 0x2) /* bytes */
-				{
-					if(fr->p.flags & MPG123_IGNORE_STREAMLENGTH)
-					{
-						if(VERBOSE3)
-						fprintf(stderr, "Note: Ignoring Xing bytes because of MPG123_IGNORE_STREAMLENGTH\n");
-					}
-					else
-					{
-						unsigned long xing_bytes = make_long(fr->bsbuf, lame_offset);					/* We assume that this is the _total_ size of the file, including Xing frame ... and ID3 frames...
-						   It's not that clearly documented... */
-						if(fr->rdat.filelen < 1)
-						fr->rdat.filelen = (off_t) xing_bytes; /* One could start caring for overflow here. */
-						else
-						{
-							if((off_t) xing_bytes != fr->rdat.filelen && NOQUIET)
-							{
-								double diff = 1.0/fr->rdat.filelen * (fr->rdat.filelen - (off_t)xing_bytes);
-								if(diff < 0.) diff = -diff;
-
-								if(VERBOSE3)
-								fprintf(stderr, "Note: Xing stream size %lu differs by %f%% from determined/given file size!\n", xing_bytes, diff);
-
-								if(diff > 1.)
-								fprintf(stderr, "Warning: Xing stream size off by more than 1%%, fuzzy seeking may be even more fuzzy than by design!\n");
-							}
-						}
-
-						if(VERBOSE3)
-						fprintf(stderr, "Note: Xing: %lu bytes\n", (long unsigned)xing_bytes);
-					}
-
-					lame_offset += 4;
-				}
-				if(xing_flags & 0x4) /* TOC */
-				{
-					frame_fill_toc(fr, fr->bsbuf+lame_offset);
-					lame_offset += 100; /* just skip */
-				}
-				if(xing_flags & 0x8) /* VBR quality */
-				{
-					if(VERBOSE3)
-					{
-						unsigned long xing_quality = make_long(fr->bsbuf, lame_offset);
-						fprintf(stderr, "Note: Xing: quality = %lu\n", (long unsigned)xing_quality);
-					}
-					lame_offset += 4;
-				}
-				/* I guess that either 0 or LAME extra data follows */
-				if(fr->bsbuf[lame_offset] != 0)
-				{
-					unsigned char lame_vbr;
-					float replay_gain[2] = {0,0};
-					float peak = 0;
-					float gain_offset = 0; /* going to be +6 for old lame that used 83dB */
-					char nb[10];
-					memcpy(nb, fr->bsbuf+lame_offset, 9);
-					nb[9] = 0;
-					if(VERBOSE3) fprintf(stderr, "Note: Info: Encoder: %s\n", nb);
-					if(!strncmp("LAME", nb, 4))
-					{
-						/* Lame versions before 3.95.1 used 83 dB reference level, later versions 89 dB.
-						   We stick with 89 dB as being "normal", adding 6 dB. */
-						unsigned int major, minor;
-						char rest[6];
-						rest[0] = 0;
-						if(sscanf(nb+4, "%u.%u%s", &major, &minor, rest) >= 2)
-						{
-							debug3("LAME: %u/%u/%s", major, minor, rest);
-							/* We cannot detect LAME 3.95 reliably (same version string as 3.95.1), so this is a blind spot.
-							   Everything < 3.95 is safe, though. */
-							if(major < 3 || (major == 3 && minor < 95))  /* || (major == 3 && minor == 95 && rest[0] == 0)) */
-							{
-								gain_offset = 6;
-								if(VERBOSE3) fprintf(stderr, "Note: Info: Old LAME detected, using ReplayGain preamp of %f dB.\n", gain_offset);
-							}
-						}
-						else if(VERBOSE3) fprintf(stderr, "Note: Info: Cannot determine LAME version.\n");
-					}
-					lame_offset += 9;
-					/* the 4 big bits are tag revision, the small bits vbr method */
-					lame_vbr = fr->bsbuf[lame_offset] & 15;
-					if(VERBOSE3)
-					{
-						fprintf(stderr, "Note: Info: rev %u\n", fr->bsbuf[lame_offset] >> 4);
-						fprintf(stderr, "Note: Info: vbr mode %u\n", lame_vbr);
-					}
-					lame_offset += 1;
-					switch(lame_vbr)
-					{
-						/* from rev1 proposal... not sure if all good in practice */
-						case 1:
-						case 8: fr->vbr = MPG123_CBR; break;
-						case 2:
-						case 9: fr->vbr = MPG123_ABR; break;
-						default: fr->vbr = MPG123_VBR; /* 00==unknown is taken as VBR */
-					}
-					/* skipping: lowpass filter value */
-					lame_offset += 1;
-					/* replaygain */
-					/* 32bit float: peak amplitude -- why did I parse it as int before??*/
-					/* Ah, yes, lame seems to store it as int since some day in 2003; I've only seen zeros anyway until now, bah! */
-					if
-					(
-							 (fr->bsbuf[lame_offset] != 0)
-						|| (fr->bsbuf[lame_offset+1] != 0)
-						|| (fr->bsbuf[lame_offset+2] != 0)
-						|| (fr->bsbuf[lame_offset+3] != 0)
-					)
-					{
-						debug("Wow! Is there _really_ a non-zero peak value? Now is it stored as float or int - how should I know?");
-						/* byte*peak_bytes = (byte*) &peak;
-						... endianess ... just copy bytes to avoid floating point operation on unaligned memory?
-						peak_bytes[0] = ...
-						peak = *(float*) (fr->bsbuf+lame_offset); */
-					}
-					if(VERBOSE3) fprintf(stderr, "Note: Info: peak = %f (I won't use this)\n", peak);
-					peak = 0; /* until better times arrived */
-					lame_offset += 4;
-					/*
-						ReplayGain values - lame only writes radio mode gain...
-						16bit gain, 3 bits name, 3 bits originator, sign (1=-, 0=+), dB value*10 in 9 bits (fixed point)
-						ignore the setting if name or originator == 000!
-						radio 0 0 1 0 1 1 1 0 0 1 1 1 1 1 0 1
-						audiophile 0 1 0 0 1 0 0 0 0 0 0 1 0 1 0 0
-					*/
-
-					for(i =0; i < 2; ++i)
-					{
-						unsigned char origin = (fr->bsbuf[lame_offset] >> 2) & 0x7; /* the 3 bits after that... */
-						if(origin != 0)
-						{
-							unsigned char gt = fr->bsbuf[lame_offset] >> 5; /* only first 3 bits */
-							if(gt == 1) gt = 0; /* radio */
-							else if(gt == 2) gt = 1; /* audiophile */
-							else continue;
-							/* get the 9 bits into a number, divide by 10, multiply sign... happy bit banging */
-							replay_gain[gt] = (float) ((fr->bsbuf[lame_offset] & 0x2) ? -0.1 : 0.1) * (make_short(fr->bsbuf, lame_offset) & 0x1ff);
-							/* If this is an automatic value from LAME (or whatever), the automatic gain offset applies.
-							   If a user or whoever set the value, do not touch it! 011 is automatic origin. */
-							if(origin == 3) replay_gain[gt] += gain_offset;
-						}
-						lame_offset += 2;
-					}
-					if(VERBOSE3) 
-					{
-						fprintf(stderr, "Note: Info: Radio Gain = %03.1fdB\n", replay_gain[0]);
-						fprintf(stderr, "Note: Info: Audiophile Gain = %03.1fdB\n", replay_gain[1]);
-					}
-					for(i=0; i < 2; ++i)
-					{
-						if(fr->rva.level[i] <= 0)
-						{
-							fr->rva.peak[i] = 0; /* at some time the parsed peak should be used */
-							fr->rva.gain[i] = replay_gain[i];
-							fr->rva.level[i] = 0;
-						}
-					}
-					lame_offset += 1; /* skipping encoding flags byte */
-					if(fr->vbr == MPG123_ABR)
-					{
-						fr->abr_rate = fr->bsbuf[lame_offset];
-						if(VERBOSE3) fprintf(stderr, "Note: Info: ABR rate = %u\n", fr->abr_rate);
-					}
-					lame_offset += 1;
-					/* encoder delay and padding, two 12 bit values... lame does write them from int ...*/
-					if(VERBOSE3)
-					fprintf(stderr, "Note: Encoder delay = %i; padding = %i\n",
-					        ((((int) fr->bsbuf[lame_offset]) << 4) | (((int) fr->bsbuf[lame_offset+1]) >> 4)),
-					        (((((int) fr->bsbuf[lame_offset+1]) << 8) | (((int) fr->bsbuf[lame_offset+2]))) & 0xfff) );
-					#ifdef GAPLESS
-					if(fr->p.flags & MPG123_GAPLESS)
-					{
-						off_t skipbegin = ((((int) fr->bsbuf[lame_offset]) << 4) | (((int) fr->bsbuf[lame_offset+1]) >> 4));
-						off_t skipend = (((((int) fr->bsbuf[lame_offset+1]) << 8) | (((int) fr->bsbuf[lame_offset+2]))) & 0xfff);
-						frame_gapless_init(fr, fr->track_frames, skipbegin, skipend);
-					}
-					#endif
-				}
-				/* switch buffer back ... */
-				fr->bsbuf = fr->bsspace[fr->bsnum]+512;
-				fr->bsnum = (fr->bsnum + 1) & 1;
-				return 1; /* got it! */
-			}
+			if(VERBOSE3) fprintf(stderr, "Note: Xing: %lu frames\n", long_tmp);
 		}
 	}
-	return 0; /* no lame tag */
+	if(xing_flags & 0x2) /* total bitstream bytes */
+	{
+		check_bytes_left(4); long_tmp = bit_read_long(fr->bsbuf, &lame_offset);
+		if(fr->p.flags & MPG123_IGNORE_STREAMLENGTH)
+		{
+			if(VERBOSE3) fprintf(stderr
+			,	"Note: Ignoring Xing bytes because of MPG123_IGNORE_STREAMLENGTH\n");
+		}
+		else
+		{
+			/* The Xing bitstream length, at least as interpreted by the Lame
+			   encoder, encompasses all data from the Xing header frame on,
+			   ignoring leading ID3v2 data. Trailing tags (ID3v1) seem to be 
+			   included, though. */
+			if(fr->rdat.filelen < 1)
+			fr->rdat.filelen = (off_t) long_tmp + fr->audio_start; /* Overflow? */
+			else
+			{
+				if((off_t)long_tmp != fr->rdat.filelen - fr->audio_start && NOQUIET)
+				{ /* 1/filelen instead of 1/(filelen-start), my decision */
+					double diff = 100.0/fr->rdat.filelen
+					            * ( fr->rdat.filelen - fr->audio_start
+					                - (off_t)long_tmp );
+					if(diff < 0.) diff = -diff;
+
+					if(VERBOSE3) fprintf(stderr
+					,	"Note: Xing stream size %lu differs by %f%% from determined/given file size!\n"
+					,	long_tmp, diff);
+
+					if(diff > 1. && NOQUIET) fprintf(stderr
+					,	"Warning: Xing stream size off by more than 1%%, fuzzy seeking may be even more fuzzy than by design!\n");
+				}
+			}
+
+			if(VERBOSE3) fprintf(stderr, "Note: Xing: %lu bytes\n", long_tmp);
+		}
+	}
+	if(xing_flags & 0x4) /* TOC */
+	{
+		check_bytes_left(100);
+		frame_fill_toc(fr, fr->bsbuf+lame_offset);
+		lame_offset += 100;
+	}
+	if(xing_flags & 0x8) /* VBR quality */
+	{
+		check_bytes_left(4); long_tmp = bit_read_long(fr->bsbuf, &lame_offset);
+		if(VERBOSE3) fprintf(stderr, "Note: Xing: quality = %lu\n", long_tmp);
+	}
+	/*
+		Either zeros/nothing, or:
+			0-8: LAME3.90a
+			9: revision/VBR method
+			10: lowpass
+			11-18: ReplayGain
+			19: encoder flags
+			20: ABR 
+			21-23: encoder delays
+	*/
+	check_bytes_left(24); /* I'm interested in 24 B of extra info. */
+	if(fr->bsbuf[lame_offset] != 0)
+	{
+		unsigned char lame_vbr;
+		float replay_gain[2] = {0,0};
+		float peak = 0;
+		float gain_offset = 0; /* going to be +6 for old lame that used 83dB */
+		char nb[10];
+		off_t pad_in;
+		off_t pad_out;
+		memcpy(nb, fr->bsbuf+lame_offset, 9);
+		nb[9] = 0;
+		if(VERBOSE3) fprintf(stderr, "Note: Info: Encoder: %s\n", nb);
+		if(!strncmp("LAME", nb, 4))
+		{
+			/* Lame versions before 3.95.1 used 83 dB reference level, later
+			   versions 89 dB. We stick with 89 dB as being "normal", adding
+			   6 dB. */
+			unsigned int major, minor;
+			char rest[6];
+			rest[0] = 0;
+			if(sscanf(nb+4, "%u.%u%s", &major, &minor, rest) >= 2)
+			{
+				debug3("LAME: %u/%u/%s", major, minor, rest);
+				/* We cannot detect LAME 3.95 reliably (same version string as
+				   3.95.1), so this is a blind spot. Everything < 3.95 is safe,
+				   though. */
+				if(major < 3 || (major == 3 && minor < 95))
+				{
+					gain_offset = 6;
+					if(VERBOSE3) fprintf(stderr
+					,	"Note: Info: Old LAME detected, using ReplayGain preamp of %f dB.\n"
+					,	gain_offset);
+				}
+			}
+			else if(VERBOSE3) fprintf(stderr
+			,	"Note: Info: Cannot determine LAME version.\n");
+		}
+		lame_offset += 9; /* 9 in */ 
+
+		/* The 4 big bits are tag revision, the small bits vbr method. */
+		lame_vbr = fr->bsbuf[lame_offset] & 15;
+		lame_offset += 1; /* 10 in */
+		if(VERBOSE3)
+		{
+			fprintf(stderr, "Note: Info: rev %u\n", fr->bsbuf[lame_offset] >> 4);
+			fprintf(stderr, "Note: Info: vbr mode %u\n", lame_vbr);
+		}
+		switch(lame_vbr)
+		{
+			/* from rev1 proposal... not sure if all good in practice */
+			case 1:
+			case 8: fr->vbr = MPG123_CBR; break;
+			case 2:
+			case 9: fr->vbr = MPG123_ABR; break;
+			default: fr->vbr = MPG123_VBR; /* 00==unknown is taken as VBR */
+		}
+		lame_offset += 1; /* 11 in, skipping lowpass filter value */
+
+		/* ReplayGain peak ampitude, 32 bit float -- why did I parse it as int
+		   before??	Ah, yes, Lame seems to store it as int since some day in 2003;
+		   I've only seen zeros anyway until now, bah! */
+		if
+		(
+			   (fr->bsbuf[lame_offset]   != 0)
+			|| (fr->bsbuf[lame_offset+1] != 0)
+			|| (fr->bsbuf[lame_offset+2] != 0)
+			|| (fr->bsbuf[lame_offset+3] != 0)
+		)
+		{
+			debug("Wow! Is there _really_ a non-zero peak value? Now is it stored as float or int - how should I know?");
+			/* byte*peak_bytes = (byte*) &peak;
+			... endianess ... just copy bytes to avoid floating point operation on unaligned memory?
+			peak_bytes[0] = ...
+			peak = *(float*) (fr->bsbuf+lame_offset); */
+		}
+		if(VERBOSE3) fprintf(stderr
+		,	"Note: Info: peak = %f (I won't use this)\n", peak);
+		peak = 0; /* until better times arrived */
+		lame_offset += 4; /* 15 in */
+
+		/* ReplayGain values - lame only writes radio mode gain...
+		   16bit gain, 3 bits name, 3 bits originator, sign (1=-, 0=+),
+		   dB value*10 in 9 bits (fixed point) ignore the setting if name or
+		   originator == 000!
+		   radio      0 0 1 0 1 1 1 0 0 1 1 1 1 1 0 1
+		   audiophile 0 1 0 0 1 0 0 0 0 0 0 1 0 1 0 0 */
+		for(i =0; i < 2; ++i)
+		{
+			unsigned char gt     =  fr->bsbuf[lame_offset] >> 5;
+			unsigned char origin = (fr->bsbuf[lame_offset] >> 2) & 0x7;
+			float factor         = (fr->bsbuf[lame_offset] & 0x2) ? -0.1f : 0.1f;
+			unsigned short gain  = bit_read_short(fr->bsbuf, &lame_offset) & 0x1ff; /* 19 in (2 cycles) */
+			if(origin == 0 || gt < 1 || gt > 2) continue;
+
+			--gt;
+			replay_gain[gt] = factor * (float) gain;
+			/* Apply gain offset for automatic origin. */
+			if(origin == 3) replay_gain[gt] += gain_offset;
+		}
+		if(VERBOSE3) 
+		{
+			fprintf(stderr, "Note: Info: Radio Gain = %03.1fdB\n"
+			,	replay_gain[0]);
+			fprintf(stderr, "Note: Info: Audiophile Gain = %03.1fdB\n"
+			,	replay_gain[1]);
+		}
+		for(i=0; i < 2; ++i)
+		{
+			if(fr->rva.level[i] <= 0)
+			{
+				fr->rva.peak[i] = 0; /* TODO: use parsed peak? */
+				fr->rva.gain[i] = replay_gain[i];
+				fr->rva.level[i] = 0;
+			}
+		}
+
+		lame_offset += 1; /* 20 in, skipping encoding flags byte */
+
+		/* ABR rate */
+		if(fr->vbr == MPG123_ABR)
+		{
+			fr->abr_rate = fr->bsbuf[lame_offset];
+			if(VERBOSE3) fprintf(stderr, "Note: Info: ABR rate = %u\n"
+			,	fr->abr_rate);
+		}
+		lame_offset += 1; /* 21 in */
+	
+		/* Encoder delay and padding, two 12 bit values
+		   ... lame does write them from int. */
+		pad_in  = ( (((int) fr->bsbuf[lame_offset])   << 4)
+		          | (((int) fr->bsbuf[lame_offset+1]) >> 4) );
+		pad_out = ( (((int) fr->bsbuf[lame_offset+1]) << 8)
+		          |  ((int) fr->bsbuf[lame_offset+2])       ) & 0xfff;
+		lame_offset += 3; /* 24 in */
+		if(VERBOSE3) fprintf(stderr, "Note: Encoder delay = %i; padding = %i\n"
+		,	(int)pad_in, (int)pad_out);
+		#ifdef GAPLESS
+		if(fr->p.flags & MPG123_GAPLESS)
+		frame_gapless_init(fr, fr->track_frames, pad_in, pad_out);
+		#endif
+		/* final: 24 B LAME data */
+	}
+
+check_lame_tag_yes:
+	/* switch buffer back ... */
+	fr->bsbuf = fr->bsspace[fr->bsnum]+512;
+	fr->bsnum = (fr->bsnum + 1) & 1;
+	return 1;
+check_lame_tag_no:
+	return 0;
 }
 
 /* Just tell if the header is some mono. */
 static int header_mono(unsigned long newhead)
 {
 	return HDR_CHANNEL_VAL(newhead) == MPG_MD_MONO ? TRUE : FALSE;
+}
+
+/* true if the two headers will work with the same decoding routines */
+static int head_compatible(unsigned long fred, unsigned long bret)
+{
+	return ( (fred & HDR_CMPMASK) == (bret & HDR_CMPMASK)
+		&&       header_mono(fred) == header_mono(bret)    );
 }
 
 static void halfspeed_prepare(mpg123_handle *fr)
@@ -432,7 +482,7 @@ static int halfspeed_do(mpg123_handle *fr)
 if(ret < 0){ debug1("%s", ret == MPG123_NEED_MORE ? "need more" : "read error"); goto read_frame_bad; } \
 else if(ret == PARSE_AGAIN) goto read_again; \
 else if(ret == PARSE_RESYNC) goto init_resync; \
-else if(ret == PARSE_END) goto read_frame_bad; \
+else if(ret == PARSE_END){ ret=0; goto read_frame_bad; } \
 }
 
 /*
@@ -468,21 +518,6 @@ read_again:
 	if((ret = fr->rd->head_read(fr,&newhead)) <= 0){ debug1("need more? (%i)", ret); goto read_frame_bad;}
 
 init_resync:
-
-	fr->header_change = 2; /* output format change is possible... */
-	if(fr->oldhead)        /* check a following header for change */
-	{
-		if(fr->oldhead == newhead) fr->header_change = 0;
-		else
-		/* If they have the same sample rate. Note that only is _not_ the case for the first header, as we enforce sample rate match for following frames.
-			 So, during one stream, only change of stereoness is possible and indicated by header_change == 2. */
-		if((fr->oldhead & HDR_SAMPMASK) == (newhead & HDR_SAMPMASK))
-		{
-			/* Now if both channel modes are mono or both stereo, it's no big deal. */
-			if( header_mono(fr->oldhead) == header_mono(newhead))
-			fr->header_change = 1;
-		}
-	}
 
 #ifdef SKIP_JUNK
 	if(!fr->firsthead && !head_check(newhead))
@@ -600,6 +635,41 @@ init_resync:
 	fr->to_decode = fr->to_ignore = TRUE;
 	if(fr->error_protection) fr->crc = getbits(fr, 16); /* skip crc */
 
+	/*
+		Let's check for header change after deciding that the new one is good
+		and actually having read a frame.
+
+		header_change > 1: decoder structure has to be updated
+		Preserve header_change value from previous runs if it is serious.
+		If we still have a big change pending, it should be dealt with outside,
+		fr->header_change set to zero afterwards.
+	*/
+	if(fr->header_change < 2)
+	{
+		fr->header_change = 2; /* output format change is possible... */
+		if(fr->oldhead)        /* check a following header for change */
+		{
+			if(fr->oldhead == newhead) fr->header_change = 0;
+			else
+			/* Headers that match in this test behave the same for the outside world.
+			   namely: same decoding routines, same amount of decoded data. */
+			if(head_compatible(fr->oldhead, newhead))
+			fr->header_change = 1;
+			else
+			{
+				fr->state_flags |= FRAME_FRANKENSTEIN;
+				if(NOQUIET)
+				fprintf(stderr, "\nWarning: Big change (MPEG version, layer, rate). Frankenstein stream?\n");
+			}
+		}
+		else if(fr->firsthead && !head_compatible(fr->firsthead, newhead))
+		{
+			fr->state_flags |= FRAME_FRANKENSTEIN;
+			if(NOQUIET)
+			fprintf(stderr, "\nWarning: Big change from first (MPEG version, layer, rate). Frankenstein stream?\n");
+		}
+	}
+
 	fr->oldhead = newhead;
 
 	return 1;
@@ -624,7 +694,7 @@ read_frame_bad:
  * <0: error codes, possibly from feeder buffer (NEED_MORE)
  *  PARSE_BAD: cannot get the framesize for some reason and shall silentry try the next possible header (if this is no free format stream after all...)
  */
-static int guess_freeformat_framesize(mpg123_handle *fr)
+static int guess_freeformat_framesize(mpg123_handle *fr, unsigned long oldhead)
 {
 	long i;
 	int ret;
@@ -644,7 +714,7 @@ static int guess_freeformat_framesize(mpg123_handle *fr)
 		if((ret=fr->rd->head_shift(fr,&head))<=0) return ret;
 
 		/* No head_check needed, the mask contains all relevant bits. */
-		if((head & HDR_SAMEMASK) == (fr->oldhead & HDR_SAMEMASK))
+		if((head & HDR_SAMEMASK) == (oldhead & HDR_SAMEMASK))
 		{
 			fr->rd->back_bytes(fr,i+1);
 			fr->framesize = i-3;
@@ -673,29 +743,22 @@ static int decode_header(mpg123_handle *fr,unsigned long newhead, int *freeforma
 		error1("trying to decode obviously invalid header 0x%08lx", newhead);
 	}
 #endif
+	/* For some reason, the layer and sampling freq settings used to be wrapped
+	   in a weird conditional including MPG123_NO_RESYNC. What was I thinking?
+	   This information has to be consistent. */
+	fr->lay = 4 - HDR_LAYER_VAL(newhead);
+
 	if(HDR_VERSION_VAL(newhead) & 0x2)
 	{
 		fr->lsf = (HDR_VERSION_VAL(newhead) & 0x1) ? 0 : 1;
 		fr->mpeg25 = 0;
+		fr->sampling_frequency = HDR_SAMPLERATE_VAL(newhead) + (fr->lsf*3);
 	}
 	else
 	{
 		fr->lsf = 1;
 		fr->mpeg25 = 1;
-	}
-
-	if(   (fr->p.flags & MPG123_NO_RESYNC) || !fr->oldhead
-	   || (HDR_VERSION_VAL(fr->oldhead) != HDR_VERSION_VAL(newhead)) )
-	{
-		/* If "tryresync" is false, assume that certain
-		parameters do not change within the stream!
-		Force an update if lsf or mpeg25 settings
-		have changed. */
-		fr->lay = 4 - HDR_LAYER_VAL(newhead);
-		if(fr->mpeg25)
 		fr->sampling_frequency = 6 + HDR_SAMPLERATE_VAL(newhead);
-		else
-		fr->sampling_frequency = HDR_SAMPLERATE_VAL(newhead) + (fr->lsf*3);
 	}
 
 	#ifdef DEBUG
@@ -728,7 +791,7 @@ static int decode_header(mpg123_handle *fr,unsigned long newhead, int *freeforma
 				if(VERBOSE3) error("You fooled me too often. Refusing to guess free format frame size _again_.");
 				return PARSE_BAD;
 			}
-			ret = guess_freeformat_framesize(fr);
+			ret = guess_freeformat_framesize(fr, newhead);
 			if(ret == PARSE_GOOD)
 			{
 				fr->freeformat_framesize = fr->framesize - fr->padding;
@@ -756,6 +819,7 @@ static int decode_header(mpg123_handle *fr,unsigned long newhead, int *freeforma
 	{
 #ifndef NO_LAYER1
 		case 1:
+			fr->spf = 384;
 			fr->do_layer = do_layer1;
 			if(!fr->freeformat)
 			{
@@ -767,6 +831,7 @@ static int decode_header(mpg123_handle *fr,unsigned long newhead, int *freeforma
 #endif
 #ifndef NO_LAYER2
 		case 2:
+			fr->spf = 1152;
 			fr->do_layer = do_layer2;
 			if(!fr->freeformat)
 			{
@@ -779,6 +844,7 @@ static int decode_header(mpg123_handle *fr,unsigned long newhead, int *freeforma
 #endif
 #ifndef NO_LAYER3
 		case 3:
+			fr->spf = fr->lsf ? 576 : 1152; /* MPEG 2.5 implies LSF.*/
 			fr->do_layer = do_layer3;
 			if(fr->lsf)
 			fr->ssize = (fr->stereo == 1) ? 9 : 17;
@@ -823,40 +889,21 @@ void set_pointer(mpg123_handle *fr, long backstep)
 
 double compute_bpf(mpg123_handle *fr)
 {
-	double bpf;
-
-	switch(fr->lay) 
-	{
-		case 1:
-			bpf = tabsel_123[fr->lsf][0][fr->bitrate_index];
-			bpf *= 12000.0 * 4.0;
-			bpf /= freqs[fr->sampling_frequency] <<(fr->lsf);
-		break;
-		case 2:
-		case 3:
-			bpf = tabsel_123[fr->lsf][fr->lay-1][fr->bitrate_index];
-			bpf *= 144000;
-			bpf /= freqs[fr->sampling_frequency] << (fr->lsf);
-		break;
-		default:
-			bpf = 1.0;
-	}
-
-	return bpf;
+	return (fr->framesize > 0) ? fr->framesize + 4.0 : 1.0;
 }
 
 int attribute_align_arg mpg123_spf(mpg123_handle *mh)
 {
 	if(mh == NULL) return MPG123_ERR;
 
-	return spf(mh);
+	return mh->firsthead ? mh->spf : MPG123_ERR;
 }
 
 double attribute_align_arg mpg123_tpf(mpg123_handle *fr)
 {
 	static int bs[4] = { 0,384,1152,1152 };
 	double tpf;
-	if(fr == NULL) return -1;
+	if(fr == NULL || !fr->firsthead) return MPG123_ERR;
 
 	tpf = (double) bs[fr->lay];
 	tpf /= freqs[fr->sampling_frequency] << (fr->lsf);
@@ -872,11 +919,7 @@ int attribute_align_arg mpg123_position(mpg123_handle *fr, off_t no, off_t buffs
 	off_t cur, left;
 	double curs, lefts;
 
-	if(!fr || !fr->rd) /* Isn't this too paranoid? */
-	{
-		debug("reader troubles!");
-		return MPG123_ERR;
-	}
+	if(!fr || !fr->rd) return MPG123_ERR;
 
 	no += fr->num; /* no starts out as offset */
 	cur = no;
@@ -986,7 +1029,7 @@ static int do_readahead(mpg123_handle *fr, unsigned long newhead)
 	}
 
 	debug2("does next header 0x%08lx match first 0x%08lx?", nexthead, newhead);
-	if(!head_check(nexthead) || (nexthead & HDR_CMPMASK) != (newhead & HDR_CMPMASK))
+	if(!head_check(nexthead) || !head_compatible(newhead, nexthead))
 	{
 		debug("No, the header was not valid, start from beginning...");
 		fr->oldhead = 0; /* start over */
@@ -1015,6 +1058,67 @@ static int handle_id3v2(mpg123_handle *fr, unsigned long newhead)
 	return PARSE_AGAIN;
 }
 
+static int handle_apetag(mpg123_handle *fr, unsigned long newhead)
+{
+	unsigned char apebuf[28];
+	unsigned long val;
+	int i, ret;
+
+	fr->oldhead = 0;
+
+	/* Apetag headers are 32 bytes, newhead contains 4, read the rest */
+	if((ret=fr->rd->fullread(fr,apebuf,28)) < 0) return ret;
+
+	/* Apetags start with "APETAGEX", "APET" is already tested. */
+	if(strncmp((char *)apebuf,"AGEX",4) != 0)
+		goto apetag_bad;
+
+	/* Version must be 2.000 / 2000 */
+	val = (apebuf[7]<<24)|(apebuf[6]<<16)|(apebuf[5]<<8)|apebuf[4];
+	if(val != 2000)
+		goto apetag_bad;
+
+	/* Last 8 bytes must be 0 */
+	for(i=20; i<28; i++)
+		if(apebuf[i])
+			goto apetag_bad;
+
+	/* Looks good, skip the rest. */
+	val = (apebuf[11]<<24)|(apebuf[10]<<16)|(apebuf[9]<<8)|apebuf[8];
+	if((ret=fr->rd->skip_bytes(fr,val)) < 0) return ret;
+
+	return PARSE_AGAIN;
+
+apetag_bad:	
+	if(fr->rd->back_bytes(fr,31) < 0 && NOQUIET)
+		error("Cannot seek 31 bytes back!");
+
+	return PARSE_AGAIN; /* Give the resync code a chance to fix things */
+}
+
+/* Advance a byte in stream to get next possible header and forget 
+   buffered data if possible (for feed reader). */
+#define FORGET_INTERVAL 1024 /* Used by callers to set forget flag each <n> bytes. */
+static int forget_head_shift(mpg123_handle *fr, unsigned long *newheadp, int forget)
+{
+	int ret;
+	if((ret=fr->rd->head_shift(fr,newheadp))<=0) return ret;
+	/* Try to forget buffered data as early as possible to speed up parsing where
+	   new data needs to be added for resync (and things would be re-parsed again
+	   and again because of the start from beginning after hitting end). */
+	if(forget && fr->rd->forget != NULL)
+	{
+		/* Ensure that the last 4 bytes stay in buffers for reading the header
+		   anew. */
+		if(!fr->rd->back_bytes(fr, 4))
+		{
+			fr->rd->forget(fr);
+			fr->rd->back_bytes(fr, -4);
+		}
+	}
+	return ret; /* No surprise here, error already triggered early return. */
+}
+
 /* watch out for junk/tags on beginning of stream by invalid header */
 static int skip_junk(mpg123_handle *fr, unsigned long *newheadp, long *headcount)
 {
@@ -1022,6 +1126,7 @@ static int skip_junk(mpg123_handle *fr, unsigned long *newheadp, long *headcount
 	int freeformat_count = 0;
 	long limit = 65536;
 	unsigned long newhead = *newheadp;
+	unsigned int forgetcount = 0;
 	/* check for id3v2; first three bytes (of 4) are "ID3" */
 	if((newhead & (unsigned long) 0xffffff00) == (unsigned long) 0x49443300)
 	{
@@ -1038,7 +1143,8 @@ static int skip_junk(mpg123_handle *fr, unsigned long *newheadp, long *headcount
 
 		while(newhead != ('d'<<24)+('a'<<16)+('t'<<8)+'a')
 		{
-			if((ret=fr->rd->head_shift(fr,&newhead))<=0) return ret;
+			if(++forgetcount > FORGET_INTERVAL) forgetcount = 0;
+			if((ret=forget_head_shift(fr,&newhead,!forgetcount))<=0) return ret;
 		}
 		if((ret=fr->rd->head_read(fr,&newhead))<=0) return ret;
 
@@ -1067,7 +1173,8 @@ static int skip_junk(mpg123_handle *fr, unsigned long *newheadp, long *headcount
 		++(*headcount);
 		if(limit >= 0 && *headcount >= limit) break;				
 
-		if((ret=fr->rd->head_shift(fr,&newhead))<=0) return ret;
+		if(++forgetcount > FORGET_INTERVAL) forgetcount = 0;
+		if((ret=forget_head_shift(fr, &newhead, !forgetcount))<=0) return ret;
 
 		if(head_check(newhead) && (ret=decode_header(fr, newhead, &freeformat_count))) break;
 	} while(1);
@@ -1114,6 +1221,11 @@ static int wetwork(mpg123_handle *fr, unsigned long *newheadp)
 	{
 		return handle_id3v2(fr, newhead);
 	}
+	/* Check for an apetag header */
+	if(newhead == ('A'<<24)+('P'<<16)+('E'<<8)+'T')
+	{
+		return handle_apetag(fr, newhead);
+	}
 	else if(NOQUIET && fr->silent_resync == 0)
 	{
 		fprintf(stderr,"Note: Illegal Audio-MPEG-Header 0x%08lx at offset %"OFF_P".\n",
@@ -1128,6 +1240,7 @@ static int wetwork(mpg123_handle *fr, unsigned long *newheadp)
 	{
 		long try = 0;
 		long limit = fr->p.resync_limit;
+		unsigned int forgetcount = 0;
 
 		/* If a resync is needed the bitreservoir of previous frames is no longer valid */
 		fr->bitreservoir = 0;
@@ -1139,7 +1252,8 @@ static int wetwork(mpg123_handle *fr, unsigned long *newheadp)
 			++try;
 			if(limit >= 0 && try >= limit) break;				
 
-			if((ret=fr->rd->head_shift(fr,&newhead)) <= 0)
+			if(++forgetcount > FORGET_INTERVAL) forgetcount = 0;
+			if((ret=forget_head_shift(fr,&newhead,!forgetcount)) <= 0)
 			{
 				*newheadp = newhead;
 				if(NOQUIET) fprintf (stderr, "Note: Hit end of (available) data during resync.\n");
@@ -1163,8 +1277,8 @@ static int wetwork(mpg123_handle *fr, unsigned long *newheadp)
 		}
 		else
 		{
-			debug1("Found possibly valid header 0x%lx... unsetting firsthead to reinit stream.", newhead);
-			fr->firsthead = 0;
+			debug1("Found possibly valid header 0x%lx... unsetting oldhead to reinit stream.", newhead);
+			fr->oldhead = 0;
 			return PARSE_RESYNC;
 		}
 	}

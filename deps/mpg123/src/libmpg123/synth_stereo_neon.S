@@ -18,8 +18,18 @@
 	return value: number of clipped samples
 */
 
+#ifndef _M_ARM
+	.code 32
+#endif
+#ifndef __APPLE__
+	.fpu neon
+#endif
+
 	.text
-	.globl ASM_NAME(synth_1to1_s_neon_asm)
+	GLOBAL_SYMBOL ASM_NAME(synth_1to1_s_neon_asm)
+#ifdef __ELF__
+	.type ASM_NAME(synth_1to1_s_neon_asm), %function
+#endif
 	ALIGN4
 ASM_NAME(synth_1to1_s_neon_asm):
 	push		{r4-r6, lr}
@@ -31,7 +41,7 @@ ASM_NAME(synth_1to1_s_neon_asm):
 
 	mov			r4, #4
 	mov			r5, #64
-.Loop_start_1:
+1:
 	vld1.16		{d0-d3}, [WINDOW], r5
 	vld1.16		{d4-d7}, [WINDOW], r5
 	vld1.16		{d8-d11}, [B0L, :128]!
@@ -61,7 +71,7 @@ ASM_NAME(synth_1to1_s_neon_asm):
 	vpadd.i32	d30, d30, d31
 	vpadd.i32	d24, d24, d26
 	vpadd.i32	d25, d28, d30
-	vqshrn.s32	d0, q12, #13
+	vqrshrn.s32	d0, q12, #13
 	vst1.16		{d0}, [SAMPLES]!
 	
 	vld1.16		{d0-d3}, [WINDOW], r5
@@ -93,15 +103,15 @@ ASM_NAME(synth_1to1_s_neon_asm):
 	vpadd.i32	d30, d30, d31
 	vpadd.i32	d24, d24, d26
 	vpadd.i32	d25, d28, d30
-	vqshrn.s32	d0, q12, #13
+	vqrshrn.s32	d0, q12, #13
 	vst1.16		{d0}, [SAMPLES]!
 
 	subs		r4, r4, #1
-	bne			.Loop_start_1
+	bne			1b
 
 	mov			r4, #4
 	mov			r6, #-32
-.Loop_start_2:
+1:
 	vld1.16		{d0-d3}, [WINDOW], r5
 	vld1.16		{d4-d7}, [WINDOW], r5
 	vld1.16		{d8-d11}, [B0L, :128], r6
@@ -131,7 +141,7 @@ ASM_NAME(synth_1to1_s_neon_asm):
 	vpadd.i32	d30, d30, d31
 	vpadd.i32	d24, d24, d26
 	vpadd.i32	d25, d28, d30
-	vqshrn.s32	d0, q12, #13
+	vqrshrn.s32	d0, q12, #13
 	vst1.16		{d0}, [SAMPLES]!
 	
 	vld1.16		{d0-d3}, [WINDOW], r5
@@ -163,13 +173,15 @@ ASM_NAME(synth_1to1_s_neon_asm):
 	vpadd.i32	d30, d30, d31
 	vpadd.i32	d24, d24, d26
 	vpadd.i32	d25, d28, d30
-	vqshrn.s32	d0, q12, #13
+	vqrshrn.s32	d0, q12, #13
 	vst1.16		{d0}, [SAMPLES]!
 
 	subs		r4, r4, #1
-	bne			.Loop_start_2
+	bne			1b
 
 	mov			r0, #0
 
 	vpop		{q4-q7}
 	pop			{r4-r6, pc}
+
+NONEXEC_STACK

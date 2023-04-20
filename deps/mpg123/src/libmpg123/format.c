@@ -1,9 +1,28 @@
 /*
 	format:routines to deal with audio (output) format
 
-	copyright 2008-9 by the mpg123 project - free software under the terms of the LGPL 2.1
+	copyright 2008-14 by the mpg123 project - free software under the terms of the LGPL 2.1
 	see COPYING and AUTHORS files in distribution or http://mpg123.org
 	initially written by Thomas Orgis, starting with parts of the old audio.c, with only faintly manage to show now
+
+	A Major change from mpg123 <= 1.18 is that all encodings are only really
+	disabled when done so via specific build configuration. Otherwise, the
+	missing support of decoders to produce a certain format is augmented by
+	postprocessing that converts the samples. This means happily creating
+	data with higher resolution from less accurate decoder output.
+
+	The main point is to still offer float encoding when the decoding core uses
+	a fixed point representation that has only 16 bit output. Actually, that's
+	the only point: A fixed-point build needs to create float from 16 bit, also
+	32 or 24 bit from the same source. That's all there is to it: Everything else
+	is covered by fallback synth functions. It may be a further step to check if
+	there are cases where conversion in postprocessing works well enough to omit
+	a certain specialized decoder ... but usually, they are justified by some
+	special way to get from float to integer to begin with.
+
+	I won't cover the case of faking double output with float/s16 decoders here.
+	Double precision output is a thing for experimental builds anyway. Mostly
+	theoretical and without a point.
 */
 
 #include "mpg123lib_intern.h"
@@ -42,11 +61,18 @@ static const int enc_float_range[2] = { 6, 8 };
 /* same for 8 bit encodings */
 static const int enc_8bit_range[2] = { 8, 12 };
 
-/* Only one type of float is supported. */
-# ifdef REAL_IS_FLOAT
-#  define MPG123_FLOAT_ENC MPG123_ENC_FLOAT_32
-# else
+/*
+	Only one type of float is supported.
+	Actually, double is a very special experimental case not occuring in normal
+	builds. Might actually get rid of it.
+
+	Remember here: Also with REAL_IS_FIXED, I want to be able to produce float
+	output (f32) via post-processing.
+*/
+# ifdef REAL_IS_DOUBLE
 #  define MPG123_FLOAT_ENC MPG123_ENC_FLOAT_64
+# else
+#  define MPG123_FLOAT_ENC MPG123_ENC_FLOAT_32
 # endif
 
 /* The list of actually possible encodings. */
@@ -99,18 +125,7 @@ void attribute_align_arg mpg123_encodings(const int **list, size_t *number)
 
 int attribute_align_arg mpg123_encsize(int encoding)
 {
-	if(encoding & MPG123_ENC_8)
-	return 1;
-	else if(encoding & MPG123_ENC_16)
-	return 2;
-	else if(encoding & MPG123_ENC_24)
-	return 3;
-	else if(encoding & MPG123_ENC_32 || encoding == MPG123_ENC_FLOAT_32)
-	return 4;
-	else if(encoding == MPG123_ENC_FLOAT_64)
-	return 8;
-	else
-	return 0;
+	return MPG123_SAMPLESIZE(encoding);
 }
 
 /*	char audio_caps[NUM_CHANNELS][MPG123_RATES+1][MPG123_ENCODINGS]; */
@@ -295,6 +310,36 @@ end: /* Here is the _good_ end. */
 			fr->err = MPG123_BAD_OUTFORMAT;
 			return -1;
 		}
+		/* Set up the decoder synth format. Might differ. */
+#ifdef NO_SYNTH32
+		/* Without high-precision synths, 16 bit signed is the basis for
+		   everything higher than 8 bit. */
+		if(fr->af.encsize > 2)
+		fr->af.dec_enc = MPG123_ENC_SIGNED_16;
+		else
+		{
+#endif
+			switch(fr->af.encoding)
+			{
+#ifndef NO_32BIT
+			case MPG123_ENC_SIGNED_24:
+			case MPG123_ENC_UNSIGNED_24:
+			case MPG123_ENC_UNSIGNED_32:
+				fr->af.dec_enc = MPG123_ENC_SIGNED_32;
+			break;
+#endif
+#ifndef NO_16BIT
+			case MPG123_ENC_UNSIGNED_16:
+				fr->af.dec_enc = MPG123_ENC_SIGNED_16;
+			break;
+#endif
+			default:
+				fr->af.dec_enc = fr->af.encoding;
+			}
+#ifdef NO_SYNTH32
+		}
+#endif
+		fr->af.dec_encsize = mpg123_encsize(fr->af.dec_enc);
 		return 1;
 	}
 }
@@ -302,7 +347,7 @@ end: /* Here is the _good_ end. */
 int attribute_align_arg mpg123_format_none(mpg123_handle *mh)
 {
 	int r;
-	if(mh == NULL) return MPG123_ERR;
+	if(mh == NULL) return MPG123_BAD_HANDLE;
 
 	r = mpg123_fmt_none(&mh->p);
 	if(r != MPG123_OK){ mh->err = r; r = MPG123_ERR; }
@@ -323,7 +368,7 @@ int attribute_align_arg mpg123_fmt_none(mpg123_pars *mp)
 int attribute_align_arg mpg123_format_all(mpg123_handle *mh)
 {
 	int r;
-	if(mh == NULL) return MPG123_ERR;
+	if(mh == NULL) return MPG123_BAD_HANDLE;
 
 	r = mpg123_fmt_all(&mh->p);
 	if(r != MPG123_OK){ mh->err = r; r = MPG123_ERR; }
@@ -349,7 +394,7 @@ int attribute_align_arg mpg123_fmt_all(mpg123_pars *mp)
 int attribute_align_arg mpg123_format(mpg123_handle *mh, long rate, int channels, int encodings)
 {
 	int r;
-	if(mh == NULL) return MPG123_ERR;
+	if(mh == NULL) return MPG123_BAD_HANDLE;
 	r = mpg123_fmt(&mh->p, rate, channels, encodings);
 	if(r != MPG123_OK){ mh->err = r; r = MPG123_ERR; }
 
@@ -409,15 +454,13 @@ void invalidate_format(struct audioformat *af)
 	af->channels = 0;
 }
 
-/* Consider 24bit output needing 32bit output as temporary storage. */
-off_t samples_to_storage(mpg123_handle *fr, off_t s)
+/* Number of bytes the decoder produces. */
+off_t decoder_synth_bytes(mpg123_handle *fr, off_t s)
 {
-	if(fr->af.encoding & MPG123_ENC_24)
-	return s*4*fr->af.channels; /* 4 bytes per sample */
-	else
-	return samples_to_bytes(fr, s);
+	return s * fr->af.dec_encsize * fr->af.channels;
 }
 
+/* Samples/bytes for output buffer after post-processing. */
 /* take into account: channels, bytes per sample -- NOT resampling!*/
 off_t samples_to_bytes(mpg123_handle *fr , off_t s)
 {
@@ -429,6 +472,16 @@ off_t bytes_to_samples(mpg123_handle *fr , off_t b)
 	return b / fr->af.encsize / fr->af.channels;
 }
 
+/* Number of bytes needed for decoding _and_ post-processing. */
+off_t outblock_bytes(mpg123_handle *fr, off_t s)
+{
+	int encsize = (fr->af.encoding & MPG123_ENC_24)
+	? 4 /* Intermediate 32 bit. */
+	: (fr->af.encsize > fr->af.dec_encsize
+		? fr->af.encsize
+		: fr->af.dec_encsize);
+	return s * encsize * fr->af.channels;
+}
 
 #ifndef NO_32BIT
 /* Remove every fourth byte, facilitating conversion from 32 bit to 24 bit integers.
@@ -464,58 +517,167 @@ static void chop_fourth_byte(struct outbuffer *buf)
 #endif
 	buf->fill = wpos-buf->data;
 }
+
+static void conv_s32_to_u32(struct outbuffer *buf)
+{
+	size_t i;
+	int32_t  *ssamples = (int32_t*)  buf->data;
+	uint32_t *usamples = (uint32_t*) buf->data;
+	size_t count = buf->fill/sizeof(int32_t);
+
+	for(i=0; i<count; ++i)
+	{
+		/* Different strategy since we don't have a larger type at hand.
+			 Also watch out for silly +-1 fun because integer constants are signed in C90! */
+		if(ssamples[i] >= 0)
+		usamples[i] = (uint32_t)ssamples[i] + 2147483647+1;
+		/* The smallest value goes zero. */
+		else if(ssamples[i] == ((int32_t)-2147483647-1))
+		usamples[i] = 0;
+		/* Now -value is in the positive range of signed int ... so it's a possible value at all. */
+		else
+		usamples[i] = (uint32_t)2147483647+1 - (uint32_t)(-ssamples[i]);
+	}
+}
+
 #endif
+
+
+/* We always assume that whole numbers are written!
+   partials will be cut out. */
+
+static const char *bufsizeerr = "Fatal: Buffer too small for postprocessing!";
+
+
+#ifndef NO_16BIT
+
+static void conv_s16_to_u16(struct outbuffer *buf)
+{
+	size_t i;
+	int16_t  *ssamples = (int16_t*) buf->data;
+	uint16_t *usamples = (uint16_t*)buf->data;
+	size_t count = buf->fill/sizeof(int16_t);
+
+	for(i=0; i<count; ++i)
+	{
+		long tmp = (long)ssamples[i]+32768;
+		usamples[i] = (uint16_t)tmp;
+	}
+}
+
+#ifndef NO_REAL
+static void conv_s16_to_f32(struct outbuffer *buf)
+{
+	ssize_t i;
+	int16_t *in = (int16_t*) buf->data;
+	float  *out = (float*)   buf->data;
+	size_t count = buf->fill/sizeof(int16_t);
+	/* Does that make any sense? In x86, there is an actual instruction to divide
+	   float by integer ... but then, if we have that FPU, we don't really need
+	   fixed point decoder hacks ...? */
+	float scale = 1./SHORT_SCALE;
+
+	if(buf->size < count*sizeof(float))
+	{
+		error1("%s", bufsizeerr);
+		return;
+	}
+
+	/* Work from the back since output is bigger. */
+	for(i=count-1; i>=0; --i)
+	out[i] = (float)in[i] * scale;
+
+	buf->fill = count*sizeof(float);
+}
+#endif
+
+#ifndef NO_32BIT
+static void conv_s16_to_s32(struct outbuffer *buf)
+{
+	ssize_t i;
+	int16_t  *in = (int16_t*) buf->data;
+	int32_t *out = (int32_t*) buf->data;
+	size_t count = buf->fill/sizeof(int16_t);
+
+	if(buf->size < count*sizeof(int32_t))
+	{
+		error1("%s", bufsizeerr);
+		return;
+	}
+
+	/* Work from the back since output is bigger. */
+	for(i=count-1; i>=0; --i)
+	{
+		out[i] = in[i];
+		/* Could just shift bytes, but would have to mess with sign bit. */
+		out[i] *= S32_RESCALE;
+	}
+
+	buf->fill = count*sizeof(int32_t);
+}
+#endif
+#endif
+
 
 void postprocess_buffer(mpg123_handle *fr)
 {
-	/* Handle unsigned output formats via reshifting after decode here.
-	   Also handle conversion to 24 bit. */
-#ifndef NO_32BIT
-	if(fr->af.encoding == MPG123_ENC_UNSIGNED_32 || fr->af.encoding == MPG123_ENC_UNSIGNED_24)
-	{ /* 32bit signed -> unsigned */
-		size_t i;
-		int32_t *ssamples;
-		uint32_t *usamples;
-		ssamples = (int32_t*)fr->buffer.data;
-		usamples = (uint32_t*)fr->buffer.data;
-		debug("converting output to unsigned 32 bit integer");
-		for(i=0; i<fr->buffer.fill/sizeof(int32_t); ++i)
-		{
-			/* Different strategy since we don't have a larger type at hand.
-				 Also watch out for silly +-1 fun because integer constants are signed in C90! */
-			if(ssamples[i] >= 0)
-			usamples[i] = (uint32_t)ssamples[i] + 2147483647+1;
-			/* The smalles value goes zero. */
-			else if(ssamples[i] == ((int32_t)-2147483647-1))
-			usamples[i] = 0;
-			/* Now -value is in the positive range of signed int ... so it's a possible value at all. */
-			else
-			usamples[i] = (uint32_t)2147483647+1 - (uint32_t)(-ssamples[i]);
-		}
-		/* Dumb brute force: A second pass for hacking off the last byte. */
-		if(fr->af.encoding == MPG123_ENC_UNSIGNED_24)
-		chop_fourth_byte(&fr->buffer);
-	}
-	else if(fr->af.encoding == MPG123_ENC_SIGNED_24)
+	/*
+		This caters for the final output formats that are never produced by
+		decoder synth directly (wide unsigned and 24 bit formats) or that are
+		missing because of limited decoder precision (16 bit synth but 32 or
+		24 bit output).
+	*/
+	switch(fr->af.dec_enc)
 	{
-		/* We got 32 bit signed ... chop off for 24 bit signed. */
-		chop_fourth_byte(&fr->buffer);
-	}
+#ifndef NO_32BIT
+	case MPG123_ENC_SIGNED_32:
+		switch(fr->af.encoding)
+		{
+		case MPG123_ENC_UNSIGNED_32:
+			conv_s32_to_u32(&fr->buffer);
+		break;
+		case MPG123_ENC_UNSIGNED_24:
+			conv_s32_to_u32(&fr->buffer);
+			chop_fourth_byte(&fr->buffer);
+		break;
+		case MPG123_ENC_SIGNED_24:
+			chop_fourth_byte(&fr->buffer);
+		break;
+		}
+	break;
 #endif
 #ifndef NO_16BIT
-	if(fr->af.encoding == MPG123_ENC_UNSIGNED_16)
-	{
-		size_t i;
-		short *ssamples;
-		unsigned short *usamples;
-		ssamples = (short*)fr->buffer.data;
-		usamples = (unsigned short*)fr->buffer.data;
-		debug("converting output to unsigned 16 bit integer");
-		for(i=0; i<fr->buffer.fill/sizeof(short); ++i)
+	case MPG123_ENC_SIGNED_16:
+		switch(fr->af.encoding)
 		{
-			long tmp = (long)ssamples[i]+32768;
-			usamples[i] = (unsigned short)tmp;
-		}
-	}
+		case MPG123_ENC_UNSIGNED_16:
+			conv_s16_to_u16(&fr->buffer);
+		break;
+#ifndef NO_REAL
+		case MPG123_ENC_FLOAT_32:
+			conv_s16_to_f32(&fr->buffer);
+		break;
 #endif
+#ifndef NO_32BIT
+		case MPG123_ENC_SIGNED_32:
+			conv_s16_to_s32(&fr->buffer);
+		break;
+		case MPG123_ENC_UNSIGNED_32:
+			conv_s16_to_s32(&fr->buffer);
+			conv_s32_to_u32(&fr->buffer);
+		break;
+		case MPG123_ENC_UNSIGNED_24:
+			conv_s16_to_s32(&fr->buffer);
+			conv_s32_to_u32(&fr->buffer);
+			chop_fourth_byte(&fr->buffer);
+		break;
+		case MPG123_ENC_SIGNED_24:
+			conv_s16_to_s32(&fr->buffer);
+			chop_fourth_byte(&fr->buffer);
+		break;
+#endif
+		}
+	break;
+#endif
+	}
 }

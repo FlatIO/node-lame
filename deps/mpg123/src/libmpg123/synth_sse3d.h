@@ -15,11 +15,12 @@
 	That's not memory efficient since there's doubled code, but it's easier than giving another function pointer.
 	Maybe I'll change it in future, but now I need something that works.
 
-	Original comment from MPlayer source follows:
+	Original comment from MPlayer source follows. Regarding the license history see
+	synth_mmx.S, which the original comment about this being licensed under GPL is
+	relating to.
 */
 
 /*
- * this code comes under GPL
  * This code was taken from http://www.mpg123.org
  * See ChangeLog of mpg123-0.59s-pre.1 for detail
  * Applied to mplayer by Nick Kurshev <nickols_k@mail.ru>
@@ -48,11 +49,25 @@ SYNTH_NAME:
 	pushl	%ebp
 /* stack:0=ebp 4=back 8=bandptr 12=channel 16=samples 20=buffs 24=bo 28=decwins */
 	movl	%esp, %ebp
+
 /* Now the old stack addresses are preserved via %epb. */
+#ifdef PIC
+	subl  $8,%esp /* What has been called temp before. */
+#else
 	subl  $4,%esp /* What has been called temp before. */
+#endif
 	pushl	%edi
 	pushl	%esi
 	pushl	%ebx
+
+#ifdef PIC
+	#undef _EBX_
+	#define _EBX_ %eax
+	GET_GOT
+#define EBXSAVE -4(%ebp)
+	movl _EBX_, EBXSAVE /* save PIC register */
+#endif
+
 #define TEMP 12(%esp)
 /* APP */
 	movl 12(%ebp),%ecx
@@ -63,12 +78,12 @@ SYNTH_NAME:
 	decl %ecx
 	movl 20(%ebp),%esi
 	movl (%edx),%eax
-	jecxz .L01
+	jecxz 1f
 	decl %eax
 	andl %ebx,%eax
 	leal 1088(%esi),%esi
 	movl %eax,(%edx)
-	.L01:
+1:
 	leal (%esi,%eax,2),%edx
 	movl %eax,TEMP
 	incl %eax
@@ -76,11 +91,11 @@ SYNTH_NAME:
 	leal 544(%esi,%eax,2),%ecx
 	incl %ebx
 	testl $1, %eax
-	jnz .L02
+	jnz 2f
 	xchgl %edx,%ecx
 	incl TEMP
 	leal 544(%esi),%esi
-	.L02:
+2:
 	pushl 8(%ebp)
 	pushl %edx
 	pushl %ecx
@@ -94,8 +109,11 @@ SYNTH_NAME:
 	leal (%ecx,%ebx,2), %edx
 	movl (%esp),%ecx /* restore, but leave value on stack */
 	shrl $1, %ecx
+#ifdef PIC
+	movl EBXSAVE, _EBX_
+#endif
 	ALIGN16
-	.L03:
+3:
 	movq  (%edx),%mm0
 	movq  64(%edx),%mm4
 	pmaddwd (%esi),%mm0
@@ -130,18 +148,18 @@ SYNTH_NAME:
 	packssdw %mm4,%mm4
 	movq	(%edi), %mm1
 	punpckldq %mm4, %mm0
-	pand   one_null, %mm1
-	pand   null_one, %mm0
+	pand   LOCAL_VAR(one_null), %mm1
+	pand   LOCAL_VAR(null_one), %mm0
 	por    %mm0, %mm1
 	movq   %mm1,(%edi)
 	leal 64(%esi),%esi
 	leal 128(%edx),%edx
 	leal 8(%edi),%edi
 	decl %ecx
-	jnz  .L03
+	jnz  3b
 	popl %ecx
 	andl $1, %ecx
-	jecxz .next_loop
+	jecxz 4f
 	movq  (%edx),%mm0
 	pmaddwd (%esi),%mm0
 	movq  8(%edx),%mm1
@@ -163,11 +181,15 @@ SYNTH_NAME:
 	leal 32(%esi),%esi
 	leal 64(%edx),%edx
 	leal 4(%edi),%edi
-	.next_loop:
+4:
 	subl $64,%esi
 	movl $7,%ecx
+
+#ifdef PIC
+	movl EBXSAVE, _EBX_
+#endif
 	ALIGN16
-	.L04:
+5:
 	movq  (%edx),%mm0
 	movq  64(%edx),%mm4
 	pmaddwd (%esi),%mm0
@@ -206,15 +228,15 @@ SYNTH_NAME:
 	psubsw %mm5,%mm4
 	movq	(%edi), %mm1
 	punpckldq %mm4, %mm0
-	pand   one_null, %mm1
-	pand   null_one, %mm0
+	pand   LOCAL_VAR(one_null), %mm1
+	pand   LOCAL_VAR(null_one), %mm0
 	por    %mm0, %mm1
 	movq   %mm1,(%edi)
 	subl $64,%esi
 	addl $128,%edx
 	leal 8(%edi),%edi
 	decl %ecx
-	jnz  .L04
+	jnz  5b
 	movq  (%edx),%mm0
 	pmaddwd (%esi),%mm0
 	movq  8(%edx),%mm1
@@ -241,6 +263,6 @@ SYNTH_NAME:
 	popl	%ebx
 	popl	%esi
 	popl	%edi
-	addl $4,%esp
+	mov		%ebp, %esp
 	popl	%ebp
 	ret

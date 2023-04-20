@@ -7,7 +7,7 @@
 	old timestamp: Wed Apr  9 20:57:47 MET DST 1997
 
 	Thomas' notes:
-	
+	;
 	I used to do 
 	GET http://server/path HTTP/1.0
 
@@ -35,6 +35,8 @@
 #include <errno.h>
 #include "true.h"
 #endif
+
+#include <ctype.h>
 
 #include "debug.h"
 
@@ -80,7 +82,15 @@ static const char* mime_file[] =
 	NULL
 };
 static const char* mime_m3u[] = { "audio/mpegurl", "audio/mpeg-url", "audio/x-mpegurl", NULL };
-static const char* mime_pls[]	= { "audio/x-scpls", "audio/scpls", "application/pls", NULL };
+static const char* mime_pls[]	=
+{
+	"audio/x-scpls"
+,	"audio/scpls"
+,	"application/pls"
+,	"application/x-scpls"
+,	"application/pls+xml"
+,	NULL
+};
 static const char** mimes[] = { mime_file, mime_m3u, mime_pls, NULL };
 
 int debunk_mime(const char* mime)
@@ -93,12 +103,16 @@ int debunk_mime(const char* mime)
 	aux = strchr(mime, ';');
 	if(aux != NULL)
 	{
-		fprintf(stderr, "Warning: additional info in content-type ignored (%s)\n", aux+1);
-		/* Just compare up to before the ";". */
+		if(!param.quiet)
+			fprintf(stderr, "Warning: additional info in content-type ignored (%s)\n", aux+1);
+		/* Just compare up to before the ";" */
 		len = aux-mime;
 	}
 	/* Else, compare the whole string -- including the end. */
 	else len = strlen(mime)+1;
+
+	/* Skip trailing whitespace, to ne nice to strange folks. */
+	while(len && isspace(mime[len-1])) --len;
 
 	for(i=0; mimes[i]    != NULL; ++i)
 	for(j=0; mimes[i][j] != NULL; ++j)
@@ -146,10 +160,10 @@ static int writestring (int fd, mpg123_string *string)
 	return TRUE;
 }
 
-static size_t readstring (mpg123_string *string, size_t maxlen, FILE *f)
+static size_t readstring (mpg123_string *string, size_t maxlen, int fd)
 {
 	int err;
-	debug2("Attempting readstring on %d for %"SIZE_P" bytes", f ? fileno(f) : 0, (size_p)maxlen);
+	debug2("Attempting readstring on %d for %"SIZE_P" bytes", fd, (size_p)maxlen);
 	string->fill = 0;
 	while(maxlen == 0 || string->fill < maxlen)
 	{
@@ -160,7 +174,7 @@ static size_t readstring (mpg123_string *string, size_t maxlen, FILE *f)
 			string->fill = 0;
 			return 0;
 		}
-		err = read(fileno(f),string->p+string->fill,1);
+		err = read(fd,string->p+string->fill,1);
 		/* Whoa... reading one byte at a time... one could ensure the line break in another way, but more work. */
 		if( err == 1)
 		{
@@ -497,7 +511,6 @@ int http_open(char* url, struct httpdata *hd)
 	int oom  = 0;
 	int relocate, numrelocs = 0;
 	int got_location = FALSE;
-	FILE *myfile = NULL;
 	/*
 		workaround for http://www.global24music.com/rautemusik/files/extreme/isdn.pls
 		this site's apache gives me a relocation to the same place when I give the port in Host request field
@@ -547,14 +560,17 @@ int http_open(char* url, struct httpdata *hd)
 		if(strncasecmp(purl.p, "http://", 7) != 0) mpg123_set_string(&request_url, "http://");
 		else mpg123_set_string(&request_url, "");
 
+		mpg123_chomp_string(&purl);
 		mpg123_add_string(&request_url, purl.p);
 
+		/* Always store the host and port from the URL for correct host header
+		   in the request. Proxy server is used for connection, but never in the
+		   host header! */
+		if(!split_url(&purl, NULL, &host, &port, &path)){ oom=1; goto exit; }
 		if (hd->proxystate >= PROXY_HOST)
 		{
 			/* We will connect to proxy, full URL goes into the request. */
-			if(    !mpg123_copy_string(&hd->proxyhost, &host)
-			    || !mpg123_copy_string(&hd->proxyport, &port)
-			    || !mpg123_set_string(&request, "GET ")
+			if(    !mpg123_set_string(&request, "GET ")
 			    || !mpg123_add_string(&request, request_url.p) )
 			{
 				oom=1; goto exit;
@@ -563,7 +579,6 @@ int http_open(char* url, struct httpdata *hd)
 		else
 		{
 			/* We will connect to the host from the URL and only the path goes into the request. */
-			if(!split_url(&purl, NULL, &host, &port, &path)){ oom=1; goto exit; }
 			if(    !mpg123_set_string(&request, "GET ")
 			    || !mpg123_add_string(&request, path.p) )
 			{
@@ -574,6 +589,16 @@ int http_open(char* url, struct httpdata *hd)
 		if(!fill_request(&request, &host, &port, &httpauth1, &try_without_port)){ oom=1; goto exit; }
 
 		httpauth1.fill = 0; /* We use the auth data from the URL only once. */
+		if (hd->proxystate >= PROXY_HOST)
+		{
+			/* Only the host:port used for actual connection is replaced by
+			   proxy. */
+			if(    !mpg123_copy_string(&hd->proxyhost, &host)
+			    || !mpg123_copy_string(&hd->proxyport, &port) )
+			{
+				oom=1; goto exit;
+			}
+		}
 		debug2("attempting to open_connection to %s:%s", host.p, port.p);
 		sock = open_connection(&host, &port);
 		if(sock < 0)
@@ -585,15 +610,10 @@ int http_open(char* url, struct httpdata *hd)
 		
 		if(param.verbose > 2) fprintf(stderr, "HTTP request:\n%s\n",request.p);
 		if(!writestring(sock, &request)){ http_failure; }
-		if (!(myfile = fdopen(sock, "rb")))
-		{
-			error1("fdopen: %s", strerror(errno));
-			http_failure;
-		}
 		relocate = FALSE;
 		/* Arbitrary length limit here... */
 #define safe_readstring \
-		readstring(&response, SIZE_MAX/16, myfile); \
+		readstring(&response, SIZE_MAX/16, sock); \
 		if(response.fill > SIZE_MAX/16) /* > because of appended zero. */ \
 		{ \
 			error("HTTP response line exceeds max. length"); \
@@ -661,6 +681,15 @@ int http_open(char* url, struct httpdata *hd)
 				}
 			}
 		} while(response.p[0] != '\r' && response.p[0] != '\n');
+		if(relocate)
+		{
+			close(sock);
+			sock = -1;
+			/* Forget content type, might just relate to a displayed error page,
+			   not the resource being redirected to. */
+			mpg123_free_string(&hd->content_type);
+			mpg123_init_string(&hd->content_type);
+		}
 	} while(relocate && got_location && purl.fill && numrelocs++ < HTTP_MAX_RELOCATIONS);
 	if(relocate)
 	{
@@ -692,6 +721,8 @@ exit: /* The end as well as the exception handling point... */
 /* stub */
 int http_open (char* url, struct httpdata *hd)
 {
+	if(!param.quiet)
+		error("HTTP support not built in.");
 	return -1;
 }
 #endif
