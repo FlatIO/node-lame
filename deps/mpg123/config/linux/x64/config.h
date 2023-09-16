@@ -11,6 +11,9 @@
 /* Define if building universal (internal helper macro) */
 /* #undef AC_APPLE_UNIVERSAL_BUILD */
 
+/* Define if .balign is present. */
+#define ASMALIGN_BALIGN 1
+
 /* Define if .align takes 3 for alignment of 2^3=8 bytes instead of 8. */
 /* #undef ASMALIGN_EXP */
 
