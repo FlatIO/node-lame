@@ -159,6 +159,7 @@
           'sources': [
             'src/libmpg123/dct64_x86_64.S',
             'src/libmpg123/dct64_x86_64_float.S',
+            'src/libmpg123/dct36_x86_64.S',
             'src/libmpg123/synth_s32.c',
             'src/libmpg123/synth_real.c',
             'src/libmpg123/synth_stereo_x86_64.S',
