@@ -27,7 +27,7 @@
   },
   "devDependencies": {
     "@machinomy/types-readable-stream": "git+https://github.com/machinomy/types-readable-stream.git",
-    "@types/node": "^18.7.16",
+    "@types/node": "^20.8.3",
     "mocha": "^10.0.0"
   },
   "scripts": {
