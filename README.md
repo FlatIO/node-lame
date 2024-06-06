@@ -16,18 +16,18 @@ there's no need to have them installed on your system.
 Simply compile and install `node-lame` using `npm`:
 
 ``` bash
-$ npm install lame
+$ npm install @flat/lame
 ```
 
 
 Example
 -------
 
-Here's an example of using `node-lame` to encode some raw PCM data coming from
+Here's an example of using `@flat/node-lame` to encode some raw PCM data coming from
 `process.stdin` to an MP3 file that gets piped to `process.stdout`:
 
 ``` javascript
-var lame = require('lame');
+var lame = require('@flat/lame');
 
 // create the Encoder instance
 var encoder = new lame.Encoder({
