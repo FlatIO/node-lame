@@ -1,3 +1,10 @@
+1.2.8 / 2024-06-06
+==================
+
+  * Fixed types (@JSimoni42)
+  * Update CI testing to use Node 20.x and 22.x
+  * Update minor/patch dependencies
+
 1.2.7 / 2023-09-16
 ==================
 
