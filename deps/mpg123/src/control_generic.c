@@ -1,13 +1,13 @@
 /*
 	control_generic.c: control interface for frontends and real console warriors
 
-	copyright 1997-99,2004-8 by the mpg123 project - free software under the terms of the LGPL 2.1
+	copyright 1997-99,2004-26 by the mpg123 project
+	free software under the terms of the LGPL 2.1
 	see COPYING and AUTHORS files in distribution or http://mpg123.org
 	initially written by Andreas Neuhaus and Michael Hipp
 	reworked by Thomas Orgis - it was the entry point for eventually becoming maintainer...
 */
 
-#include "config.h"
 /* _BSD_SOURCE needed for setlinebuf, erm, but that's deprecated
    so trying _DEFAULT_SOURCE */
 #ifndef _DEFAULT_SOURCE
@@ -20,13 +20,12 @@
 #ifndef _BSD_SOURCE
 #define _BSD_SOURCE
 #endif
-#include "compat.h"
 
 #include "mpg123app.h"
 #include "out123.h"
 #include <stdarg.h>
 #include <ctype.h>
-#if !defined (WIN32) || defined (__CYGWIN__)
+#if !defined (_WIN32) || defined (__CYGWIN__)
 #include <sys/wait.h>
 #include <sys/socket.h>
 #endif
@@ -36,6 +35,7 @@
 #include "common.h"
 #include "genre.h"
 #include "playlist.h"
+#include "metaprint.h"
 #include "audio.h"
 #define MODE_STOPPED 0
 #define MODE_PLAYING 1
@@ -53,10 +53,12 @@ int control_file = STDIN_FILENO;
 #endif /* WANT_WIN32_FIFO */
 #endif
 FILE *outstream;
+int out_is_term = FALSE;
 static int mode = MODE_STOPPED;
 static int init = 0;
+static int sendstat_disabled = FALSE;
 
-#include "debug.h"
+#include "common/debug.h"
 
 void generic_sendmsg (const char *fmt, ...)
 {
@@ -68,15 +70,65 @@ void generic_sendmsg (const char *fmt, ...)
 	fprintf(outstream, "\n");
 }
 
+// Variant that takes the first argument as a string subject to filtering.
+static void generic_sendstr(int is_utf8, const char *fmt, char* str, ...)
+{
+	va_list ap;
+	va_start(ap, str);
+	char *outbuf = NULL;
+	outstr(&outbuf, str, is_utf8, out_is_term);
+	generic_sendmsg(fmt, PSTR(outbuf), ap);
+	free(outbuf);
+	va_end(ap);
+}
+
+// Another one for two strings. I want to avoid writing a full format string parser.
+static void generic_send2str( int is_utf8, const char *fmt
+,	char* str, char *str2, ... )
+{
+	va_list ap;
+	va_start(ap, str2);
+	char *outbuf1 = NULL;
+	char *outbuf2 = NULL;
+	outstr(&outbuf1, str,  is_utf8, out_is_term);
+	outstr(&outbuf2, str2, is_utf8, out_is_term);
+	generic_sendmsg(fmt, PSTR(outbuf1), PSTR(outbuf2), ap);
+	free(outbuf2);
+	free(outbuf1);
+	va_end(ap);
+}
+
+// Another one for three strings. Meh ...
+static void generic_send3str( int is_utf8, const char *fmt
+,	char* str, char *str2, char *str3, ... )
+{
+	va_list ap;
+	va_start(ap, str3);
+	char *outbuf1 = NULL;
+	char *outbuf2 = NULL;
+	char *outbuf3 = NULL;
+	outstr(&outbuf1, str,  is_utf8, out_is_term);
+	outstr(&outbuf2, str2, is_utf8, out_is_term);
+	outstr(&outbuf3, str3, is_utf8, out_is_term);
+	generic_sendmsg( fmt
+	,	PSTR(outbuf1), PSTR(outbuf2), PSTR(outbuf3)
+	,	ap );
+	free(outbuf3);
+	free(outbuf2);
+	free(outbuf1);
+	va_end(ap);
+}
+
 /* Split up a number of lines separated by \n, \r, both or just zero byte
    and print out each line with specified prefix. */
-static void generic_send_lines(const char* fmt, mpg123_string *inlines)
+static void generic_send_lines(int is_utf8, const char* fmt, mpg123_string *inlines)
 {
 	size_t i;
 	int hadcr = 0, hadlf = 0;
 	char *lines = NULL;
 	char *line  = NULL;
 	size_t len = 0;
+	char *outbuf = NULL;
 
 	if(inlines != NULL && inlines->fill)
 	{
@@ -98,7 +150,8 @@ static void generic_send_lines(const char* fmt, mpg123_string *inlines)
 			if(line)
 			{
 				lines[i] = 0;
-				generic_sendmsg(fmt, line);
+				outstr(&outbuf, line, is_utf8, out_is_term);
+				generic_sendmsg(fmt, outbuf ? outbuf : "???");
 				line = NULL;
 				lines[i] = save;
 			}
@@ -109,25 +162,50 @@ static void generic_send_lines(const char* fmt, mpg123_string *inlines)
 			if(line == NULL) line = lines+i;
 		}
 	}
+	free(outbuf);
 }
 
 void generic_sendstat (mpg123_handle *fr)
 {
+	if(sendstat_disabled)
+		return;
 	off_t current_frame, frames_left;
 	double current_seconds, seconds_left;
-	if(!mpg123_position(fr, 0, out123_buffered(ao), &current_frame, &frames_left, &current_seconds, &seconds_left))
-	generic_sendmsg("F %"OFF_P" %"OFF_P" %3.2f %3.2f", (off_p)current_frame, (off_p)frames_left, current_seconds, seconds_left);
+
+	if(!position_info(fr, 0, ao, &current_frame, &frames_left, &current_seconds, &seconds_left, NULL, NULL))
+	generic_sendmsg("F %" PRIiMAX " %" PRIiMAX " %3.2f %3.2f", (intmax_t)current_frame, (intmax_t)frames_left, current_seconds, seconds_left);
+	else
+	{
+		sendstat_disabled = TRUE;
+		generic_sendmsg("E Error getting position information, disabling playback status.");
+	}
+}
+
+// This is only valid as herlper to generic_sendv1, observe info memory usage!
+static void v1add(char *buf[], char *info, const char *str, size_t len)
+{
+	memset(info, 0, len);
+	if(!unknown2utf8(buf, str, len))
+	{
+		outstr(buf+1, buf[0], 1, out_is_term);
+		size_t slen = buf[1] ? strlen(buf[1])+1 : 0;
+		memcpy(info, PSTR(buf[1]), slen >=len ? len : slen);
+	}
 }
 
 static void generic_sendv1(mpg123_id3v1 *v1, const char *prefix)
 {
 	int i;
 	char info[125] = "";
-	memcpy(info,    v1->title,   30);
-	memcpy(info+30, v1->artist,  30);
-	memcpy(info+60, v1->album,   30);
-	memcpy(info+90, v1->year,     4);
-	memcpy(info+94, v1->comment, 30);
+	char *buf[2];
+	buf[0] = NULL;
+	buf[1] = NULL;
+
+	v1add(buf, info,    v1->title,   30);
+	v1add(buf, info+30, v1->artist,  30);
+	v1add(buf, info+60, v1->album,   30);
+	v1add(buf, info+90, v1->year,     4);
+	v1add(buf, info+94, v1->comment, 30);
 
 	for(i=0;i<124; ++i) if(info[i] == 0) info[i] = ' ';
 	info[i] = 0;
@@ -135,6 +213,8 @@ static void generic_sendv1(mpg123_id3v1 *v1, const char *prefix)
 	generic_sendmsg("%s ID3.genre:%i", prefix, v1->genre);
 	if(v1->comment[28] == 0 && v1->comment[29] != 0)
 	generic_sendmsg("%s ID3.track:%i", prefix, (unsigned char)v1->comment[29]);
+	free(buf[1]);
+	free(buf[0]);
 }
 
 static void generic_sendinfoid3(mpg123_handle *mh)
@@ -146,19 +226,21 @@ static void generic_sendinfoid3(mpg123_handle *mh)
 		error1("Cannot get ID3 data: %s", mpg123_strerror(mh));
 		return;
 	}
+	generic_sendmsg("I {");
 	if(v1 != NULL)
 	{
 		generic_sendv1(v1, "I");
 	}
 	if(v2 != NULL)
 	{
-		generic_send_lines("I ID3v2.title:%s",   v2->title);
-		generic_send_lines("I ID3v2.artist:%s",  v2->artist);
-		generic_send_lines("I ID3v2.album:%s",   v2->album);
-		generic_send_lines("I ID3v2.year:%s",    v2->year);
-		generic_send_lines("I ID3v2.comment:%s", v2->comment);
-		generic_send_lines("I ID3v2.genre:%s",   v2->genre);
+		generic_send_lines(1, "I ID3v2.title:%s",   v2->title);
+		generic_send_lines(1, "I ID3v2.artist:%s",  v2->artist);
+		generic_send_lines(1, "I ID3v2.album:%s",   v2->album);
+		generic_send_lines(1, "I ID3v2.year:%s",    v2->year);
+		generic_send_lines(1, "I ID3v2.comment:%s", v2->comment);
+		generic_send_lines(1, "I ID3v2.genre:%s",   v2->genre);
 	}
+	generic_sendmsg("I }");
 }
 
 void generic_sendalltag(mpg123_handle *mh)
@@ -182,18 +264,17 @@ void generic_sendalltag(mpg123_handle *mh)
 			char id[5];
 			memcpy(id, v2->text[i].id, 4);
 			id[4] = 0;
-			generic_sendmsg("T ID3v2.%s:", id);
-			generic_send_lines("T =%s", &v2->text[i].text);
+			generic_sendstr(1, "T ID3v2.%s:", id);
+			generic_send_lines(1, "T =%s", &v2->text[i].text);
 		}
 		for(i=0; i<v2->extras; ++i)
 		{
 			char id[5];
 			memcpy(id, v2->extra[i].id, 4);
 			id[4] = 0;
-			generic_sendmsg("T ID3v2.%s desc(%s):",
-			        id,
-			        v2->extra[i].description.fill ? v2->extra[i].description.p : "" );
-			generic_send_lines("T =%s", &v2->extra[i].text);
+			generic_send2str( 1, "T ID3v2.%s desc(%s)"
+			,	id, MPGSTR(v2->extra[i].description) );
+			generic_send_lines(1, "T =%s", &v2->extra[i].text);
 		}
 		for(i=0; i<v2->comments; ++i)
 		{
@@ -203,10 +284,9 @@ void generic_sendalltag(mpg123_handle *mh)
 			id[4] = 0;
 			memcpy(lang, v2->comment_list[i].lang, 3);
 			lang[3] = 0;
-			generic_sendmsg("T ID3v2.%s lang(%s) desc(%s):",
-			                id, lang,
-			                v2->comment_list[i].description.fill ? v2->comment_list[i].description.p : "");
-			generic_send_lines("T =%s", &v2->comment_list[i].text);
+			generic_send3str( 1, "T ID3v2.%s lang(%s) desc(%s):",
+				id, lang, MPGSTR(v2->comment_list[i].description) );
+			generic_send_lines(1, "T =%s", &v2->comment_list[i].text);
 		}
 	}
 	generic_sendmsg("T }");
@@ -223,11 +303,12 @@ void generic_sendinfo (char *filename)
 	t = strrchr(s, '.');
 	if (t)
 		*t = 0;
-	generic_sendmsg("I %s", s);
+	generic_sendstr(0, "I %s", s);
 }
 
 static void generic_load(mpg123_handle *fr, char *arg, int state)
 {
+	sendstat_disabled = FALSE;
 	out123_drop(ao);
 	if(mode != MODE_STOPPED)
 	{
@@ -247,8 +328,8 @@ static void generic_load(mpg123_handle *fr, char *arg, int state)
 	}
 	else generic_sendinfo(arg);
 
-	if(htd.icy_name.fill) generic_sendmsg("I ICY-NAME: %s", htd.icy_name.p);
-	if(htd.icy_url.fill)  generic_sendmsg("I ICY-URL: %s", htd.icy_url.p);
+	if(filept->htd.icy_name.fill) generic_sendstr(1, "I ICY-NAME: %s", filept->htd.icy_name.p);
+	if(filept->htd.icy_url.fill)  generic_sendstr(1, "I ICY-URL: %s",  filept->htd.icy_url.p);
 
 	mode = state;
 	init = 1;
@@ -262,6 +343,7 @@ static void generic_loadlist(mpg123_handle *fr, char *arg)
 	long i = 0;
 	char *file = NULL;
 	char *thefile = NULL;
+	char *outbuf = NULL;
 
 	/* I feel retarted with string parsing outside Perl. */
 	while(*arg && isspace(*arg)) ++arg;
@@ -274,26 +356,33 @@ static void generic_loadlist(mpg123_handle *fr, char *arg)
 		return;
 	}
 
+	generic_sendmsg("I {");
+
 	/* Now got the plain playlist path in arg. On to evil manupulation of mpg123's playlist code. */
 	param.listname = arg;
 	param.listentry = 0; /* The playlist shall not filter. */
 	param.loop = 1;
 	param.shuffle = 0;
-	prepare_playlist(0, NULL);
+	int pl_utf8 = 0;
+	prepare_playlist(0, NULL, 0, &pl_utf8);
 	while((file = get_next_file()))
 	{
 		++i;
 		/* semantics: 0 brings you to the last track */
 		if(entry == 0 || entry == i) thefile = file;
 
-		generic_sendmsg("I LISTENTRY %li: %s", i, file);
+		outstr(&outbuf, file, pl_utf8, out_is_term);
+		generic_sendmsg("I LISTENTRY %li: %s", i, outbuf ? outbuf : "???");
 	}
 	if(!i) generic_sendmsg("I LIST EMPTY");
+
+	generic_sendmsg("I }");
 
 	/* If we have something to play, play it. */
 	if(thefile) generic_load(fr, thefile, MODE_PLAYING);
 
 	free_playlist(); /* Free memory after it is not needed anymore. */
+	free(outbuf);
 }
 
 int control_generic (mpg123_handle *fr)
@@ -308,11 +397,16 @@ int control_generic (mpg123_handle *fr)
 
 	/* responses to stderr for frontends needing audio data from stdout */
 	if (param.remote_err)
- 		outstream = stderr;
- 	else
- 		outstream = stdout;
- 		
-#ifndef WIN32
+	{
+		outstream = stderr;
+		out_is_term = stderr_is_term;
+	}
+	else
+	{
+		outstream = stdout;
+		out_is_term = stdout_is_term;
+	}
+#ifndef _WIN32
  	setlinebuf(outstream);
 #else /* perhaps just use setvbuf as it's C89 */
 	/*
@@ -323,7 +417,7 @@ int control_generic (mpg123_handle *fr)
 #endif
 	/* the command behaviour is different, so is the ID */
 	/* now also with version for command availability */
-	fprintf(outstream, "@R MPG123 (ThOr) v8\n");
+	fprintf(outstream, "@R MPG123 (ThOr) v11\n");
 #ifdef FIFO
 	if(param.fifo)
 	{
@@ -336,7 +430,7 @@ int control_generic (mpg123_handle *fr)
 		unlink(param.fifo);
 		if(mkfifo(param.fifo, 0666) == -1)
 		{
-			error2("Failed to create FIFO at %s (%s)", param.fifo, strerror(errno));
+			error2("Failed to create FIFO at %s (%s)", param.fifo, INT123_strerror(errno));
 			return 1;
 		}
 		debug("going to open named pipe ... blocking until someone gives command");
@@ -349,6 +443,10 @@ int control_generic (mpg123_handle *fr)
 		debug("opened");
 	}
 #endif
+
+	// Persist over loop iterations to remember unfinished commands.
+	char buf[REMOTE_BUFFER_SIZE]; // command buffer
+	short int last_len = 0; // length of partial command in there
 
 	while (alive)
 	{
@@ -366,7 +464,34 @@ int control_generic (mpg123_handle *fr)
 			if (n == 0) {
 				if (!play_frame())
 				{
+					size_t drain_block;
+					size_t buffered;
+
+					// Ensure that prepared audio really got played, drain buffer.
+					// There is no control during draining. This mode was not planned for big buffers.
+					play_prebuffer();
+					buffered = out123_buffered(ao);
+					if(buffered)
+					{
+						int framesize = 1;
+						long rate = 1;
+						out123_getformat(ao, &rate, NULL, NULL, &framesize);
+						generic_sendmsg("DRAIN %.1f", (double)buffered/framesize/rate);
+						if(silent == 0)
+						{
+							generic_sendstat(fr);
+							drain_block = 1152*framesize;
+							do
+							{
+								out123_ndrain(ao, drain_block);
+								generic_sendstat(fr);
+							}
+							while(out123_buffered(ao));
+						} else
+							out123_drain(ao);
+					}
 					out123_pause(ao);
+					generic_sendmsg("P 3");
 					/* When the track ended, user may want to keep it open (to seek back),
 					   so there is a decision between stopping and pausing at the end. */
 					if(param.keep_open)
@@ -394,7 +519,8 @@ int control_generic (mpg123_handle *fr)
 					{
 						char *meta;
 						if(mpg123_icy(fr, &meta) == MPG123_OK)
-						generic_sendmsg("I ICY-META: %s", meta != NULL ? meta : "<nil>");
+							generic_sendstr( 1, "I ICY-META: %s"
+							,	meta != NULL ? meta : "<nil>" );
 					}
 				}
 			}
@@ -411,29 +537,27 @@ int control_generic (mpg123_handle *fr)
 					break;
 			}
 		}
-
 		/*  on error */
-		if (n < 0) {
-			fprintf(stderr, "Error waiting for command: %s\n", strerror(errno));
+		if(n < 0)
+		{
+			merror("waiting for command: %s", INT123_strerror(errno));
 			return 1;
 		}
-
 		/* read & process commands */
 		if (n > 0)
 		{
 			short int len = 1; /* length of buffer */
 			char *cmd, *arg; /* variables for parsing, */
 			char *comstr = NULL; /* gcc thinks that this could be used uninitialited... */ 
-			char buf[REMOTE_BUFFER_SIZE];
 			short int counter;
 			char *next_comstr = buf; /* have it initialized for first command */
 
 			/* read as much as possible, maybe multiple commands */
 			/* When there is nothing to read (EOF) or even an error, it is the end */
 #ifdef WANT_WIN32_FIFO
-			len = win32_fifo_read(buf,REMOTE_BUFFER_SIZE);
+			len = win32_fifo_read(buf+last_len,REMOTE_BUFFER_SIZE-last_len);
 #else
-			len = read(control_file, buf, REMOTE_BUFFER_SIZE);
+			len = read(control_file, buf+last_len, REMOTE_BUFFER_SIZE-last_len);
 #endif
 			if(len < 1)
 			{
@@ -447,16 +571,18 @@ int control_generic (mpg123_handle *fr)
 					close(control_file);
 					control_file = open(param.fifo,O_RDONLY|O_NONBLOCK);
 #endif
-					if(control_file < 0){ error1("open of fifo failed... %s", strerror(errno)); break; }
+					if(control_file < 0){ error1("open of fifo failed... %s", INT123_strerror(errno)); break; }
 					continue;
 				}
 #endif
-				if(len < 0) error1("command read error: %s", strerror(errno));
+				if(len < 0) error1("command read error: %s", INT123_strerror(errno));
 				break;
 			}
 
 			debug1("read %i bytes of commands", len);
+			len += last_len; // on top of remembered piece
 			/* one command on a line - separation by \n -> C strings in a row */
+			last_len = 0;
 			for(counter = 0; counter < len; ++counter)
 			{
 				/* line end is command end */
@@ -509,7 +635,26 @@ int control_generic (mpg123_handle *fr)
 				/* SILENCE */
 				if(!strcasecmp(comstr, "SILENCE")) {
 					silent = 1;
-					generic_sendmsg("silence");
+					generic_sendmsg("SILENCE");
+					continue;
+				}
+
+				/* PROGRESS, opposite of silence */
+				if(!strcasecmp(comstr, "PROGRESS")) {
+					silent = 0;
+					generic_sendmsg("PROGRESS");
+					continue;
+				}
+
+				if(!strcasecmp(comstr, "MUTE")) {
+					set_mute(ao, muted=TRUE);
+					generic_sendmsg("MUTE");
+					continue;
+				}
+
+				if(!strcasecmp(comstr, "UNMUTE")) {
+					set_mute(ao, muted=FALSE);
+					generic_sendmsg("UNMUTE");
 					continue;
 				}
 
@@ -580,6 +725,7 @@ int control_generic (mpg123_handle *fr)
 
 				/* QUIT */
 				if (!strcasecmp(comstr, "Q") || !strcasecmp(comstr, "QUIT")){
+					out123_drop(ao);
 					alive = FALSE; continue;
 				}
 
@@ -594,6 +740,8 @@ int control_generic (mpg123_handle *fr)
 					generic_sendmsg("H STOP/S: stop playback (closes file)");
 					generic_sendmsg("H JUMP/J <frame>|<+offset>|<-offset>|<[+|-]seconds>s: jump to mpeg frame <frame> or change position by offset, same in seconds if number followed by \"s\"");
 					generic_sendmsg("H VOLUME/V <percent>: set volume in % (0..100...); float value");
+					generic_sendmsg("H MUTE: turn on software mute in output");
+					generic_sendmsg("H UNMUTE: turn off software mute in output");
 					generic_sendmsg("H RVA off|(mix|radio)|(album|audiophile): set rva mode");
 					generic_sendmsg("H EQ/E <channel> <band> <value>: set equalizer value for frequency band 0 to 31 on channel %i (left) or %i (right) or %i (both)", MPG123_LEFT, MPG123_RIGHT, MPG123_LR);
 					generic_sendmsg("H EQFILE <filename>: load EQ settings from a file");
@@ -604,7 +752,8 @@ int control_generic (mpg123_handle *fr)
 					generic_sendmsg("H FORMAT: print out sampling rate in Hz and channel count");
 					generic_sendmsg("H SEQ <bass> <mid> <treble>: simple eq setting...");
 					generic_sendmsg("H PITCH <[+|-]value>: adjust playback speed (+0.01 is 1 %% faster)");
-					generic_sendmsg("H SILENCE: be silent during playback (meaning silence in text form)");
+					generic_sendmsg("H SILENCE: be silent during playback (no progress info, opposite of PROGRESS)");
+					generic_sendmsg("H PROGRESS: turn on progress display (opposite of SILENCE)");
 					generic_sendmsg("H STATE: Print auxiliary state info in several lines (just try it to see what info is there).");
 					generic_sendmsg("H TAG/T: Print all available (ID3) tag info, for ID3v2 that gives output of all collected text fields, using the ID3v2.3/4 4-character names. NOTE: ID3v2 data will be deleted on non-forward seeks.");
 					generic_sendmsg("H    The output is multiple lines, begin marked by \"@T {\", end by \"@T }\".");
@@ -629,8 +778,9 @@ int control_generic (mpg123_handle *fr)
 				/* commands with arguments */
 				cmd = NULL;
 				arg = NULL;
-				cmd = strtok(comstr," \t"); /* get the main command */
-				arg = strtok(NULL,""); /* get the args */
+				char *toksave = NULL;
+				cmd = INT123_compat_strtok(comstr, " \t", &toksave); /* get the main command */
+				arg = INT123_compat_strtok(NULL, "", &toksave); /* get the args */
 
 				if (cmd && strlen(cmd) && arg && strlen(arg))
 				{
@@ -638,19 +788,11 @@ int control_generic (mpg123_handle *fr)
 					/* Simple EQ: SEQ <BASS> <MID> <TREBLE>  */
 					if (!strcasecmp(cmd, "SEQ")) {
 						double b,m,t;
-						int cn;
 						if(sscanf(arg, "%lf %lf %lf", &b, &m, &t) == 3)
 						{
-							/* Consider adding mpg123_seq()... but also, on could define a nicer courve for that. */
-							if ((t >= 0) && (t <= 3))
-							for(cn=0; cn < 1; ++cn)	mpg123_eq(fr, MPG123_LEFT|MPG123_RIGHT, cn, b);
-
-							if ((m >= 0) && (m <= 3))
-							for(cn=1; cn < 2; ++cn) mpg123_eq(fr, MPG123_LEFT|MPG123_RIGHT, cn, m);
-
-							if ((b >= 0) && (b <= 3))
-							for(cn=2; cn < 32; ++cn) mpg123_eq(fr, MPG123_LEFT|MPG123_RIGHT, cn, t);
-
+							mpg123_eq_bands(fr, MPG123_LR, 0,  0, b);
+							mpg123_eq_bands(fr, MPG123_LR, 1,  1, m);
+							mpg123_eq_bands(fr, MPG123_LR, 2, 31, t);
 							generic_sendmsg("bass: %f mid: %f treble: %f", b, m, t);
 						}
 						else generic_sendmsg("E invalid arguments for SEQ: %s", arg);
@@ -711,7 +853,7 @@ int control_generic (mpg123_handle *fr)
 						newpos = mpg123_tell(fr);
 						if(newpos <= oldpos) mpg123_meta_free(fr);
 
-						generic_sendmsg("K %"OFF_P, (off_p)newpos);
+						generic_sendmsg("K %" PRIiMAX, (intmax_t)newpos);
 						continue;
 					}
 					/* JUMP */
@@ -790,27 +932,27 @@ int control_generic (mpg123_handle *fr)
 					if (!strcasecmp(cmd, "LP") || !strcasecmp(cmd, "LOADPAUSED")){ generic_load(fr, arg, MODE_PAUSED); continue; }
 
 					/* no command matched */
-					generic_sendmsg("E Unknown command: %s", cmd); /* unknown command */
+					generic_send2str(0, "E Unknown command with arguments: %s %s", cmd, arg);
 				} /* end commands with arguments */
-				else generic_sendmsg("E Unknown command or no arguments: %s", comstr); /* unknown command */
+				else generic_sendstr( 0, "E Unknown command or no arguments: %s"
+				,	comstr );
 
 				} /* end of single command processing */
 			} /* end of scanning the command buffer */
 
-			/*
-			   when last command had no \n... should I discard it?
-			   Ideally, I should remember the part and wait for next
-				 read() to get the rest up to a \n. But that can go
-				 to infinity. Too long commands too quickly are just
-				 bad. Cannot/Won't change that. So, discard the unfinished
-				 command and have fingers crossed that the rest of this
-				 unfinished one qualifies as "unknown". 
-			*/
+			// Last character not nulled if we did not use all command text.
 			if(buf[len-1] != 0)
 			{
-				char lasti = buf[len-1];
-				buf[len-1] = 0;
-				generic_sendmsg("E Unfinished command: %s%c", comstr, lasti);
+				if(next_comstr == buf && len == REMOTE_BUFFER_SIZE)
+				{
+					generic_sendmsg("E Too long command, cannot parse.");
+					// Just skipping it, provoking further parsing erros, but maybe not fatal.
+				} else
+				{
+					last_len = len-(short)(next_comstr-buf);
+					mdebug("keeping %d bytes of old command", last_len);
+					memmove(buf, next_comstr, last_len);
+				}
 			}
 		} /* end command reading & processing */
 	} /* end main (alive) loop */

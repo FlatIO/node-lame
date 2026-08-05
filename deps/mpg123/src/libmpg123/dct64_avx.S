@@ -1,11 +1,12 @@
 /*
 	dct36_sse: AVX optimized dct64 for x86-64
 
-	copyright 1995-2013 by the mpg123 project - free software under the terms of the LGPL 2.1
+	copyright 1995-2026 by the mpg123 project - free software under the terms of the LGPL 2.1
 	see COPYING and AUTHORS files in distribution or http://mpg123.org
 	initially written by Taihei Monma
 */
 
+#include "x86_64_defs.h"
 #include "mangle.h"
 
 #define samples %rdx
@@ -17,11 +18,7 @@
 	void dct64_avx(short *out0, short *out1, real *samples);
 */
 
-#ifndef __APPLE__
-	.section	.rodata
-#else
-	.data
-#endif
+	RODATA
 	ALIGN32
 costab_avx:
 	.long 1056974725
@@ -58,8 +55,8 @@ costab_avx:
 	.long 0
 	.text
 	ALIGN16
-.globl ASM_NAME(dct64_avx)
-ASM_NAME(dct64_avx):
+.globl ASM_NAME(INT123_dct64_avx)
+ASM_NAME(INT123_dct64_avx):
 #ifdef IS_MSABI
 	push		%rbp
 	mov			%rsp, %rbp

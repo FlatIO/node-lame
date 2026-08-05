@@ -1,11 +1,12 @@
 /*
 	synth_stereo_avx: AVX optimized synth for x86-64 (stereo specific version)
 
-	copyright 1995-2013 by the mpg123 project - free software under the terms of the LGPL 2.1
+	copyright 1995-2026 by the mpg123 project - free software under the terms of the LGPL 2.1
 	see COPYING and AUTHORS files in distribution or http://mpg123.org
 	initially written by Taihei Monma
 */
 
+#include "x86_64_defs.h"
 #include "mangle.h"
 
 #ifdef IS_MSABI
@@ -34,8 +35,8 @@
 */
 
 	ALIGN16
-.globl ASM_NAME(synth_1to1_s_avx_asm)
-ASM_NAME(synth_1to1_s_avx_asm):
+.globl ASM_NAME(INT123_synth_1to1_s_avx_asm)
+ASM_NAME(INT123_synth_1to1_s_avx_asm):
 #ifdef IS_MSABI /* should save xmm6-15 */
 	push		%rbp
 	mov			%rsp, %rbp

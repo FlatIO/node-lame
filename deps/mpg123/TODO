@@ -1,7 +1,5 @@
-BEFORE 1.23 RELEASE:
-
-- add client name as libout123 parameter, to be used by jack backend
-  PID still needed? JACK handles possibly non-unique names.
+One current thing: Cleanup mpg123_noise() ... remove that accidentally public symbol
+or make it official. The functionality is in syn123 and it was never documented.
 
 Things that need to be done...
 
@@ -27,14 +25,25 @@ Program terminated with signal 11, Segmentation fault.
 
 1. mpg123 could pick up new sample rates suggested by the output modules (like a jack server fixed to 96kHz) and adapt to that.
 
-Though the practical rates for MPEG audio are up to 48kHz ... but one could easily upsample.
-Currently, we detect standard rates and resample when needed... but not new ones.
+Also, the libsyn123 resampler should be employed. Just generally, libsyn123
+could also provide encoding conversions for formats not directly supported
+by accelerated decoders. See out123, which is the 
 
-4. Prevent ID3v2 tags from being parsed multiple times after seek.
-
-I need to carry a list of ID3v2 frame addresses that already have been parsed into the data structures.
-Currently, this is a possible memory leak when the seek index is disabled (tag data at file beginning) or id3 data is just somewhere in the stream.
-That being said, in the "normal" case, there is no leak.
-
-5. What's about SINGLE_MIX?
+2. What's about SINGLE_MIX?
 Check what is _really_ happening there, make some test file...
+
+3. Add playback of WAV files in mpg123 and out123.
+
+Parsing the standard 44-byte header really is no big issue. WAV64 is
+not really a thing, is it? Anyway, mpg123/out123 will probably just ignore
+the length in the header. Also, both programs need a switch to enable
+treating input as WAV, though out123 might get away with a default
+mode of looking out for a header unless format options were given. Yes,
+that makes sense. And perhaps I really should limit this to out123.
+
+4. Enable some way to avoid libmpg123 messages (Note: …) messing up display
+   of the progress bar.
+
+- cleanup callback from app
+- fprintf callback from app
+- log buffer

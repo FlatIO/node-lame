@@ -1,3 +1,926 @@
+1.33.7
+------
+- mpg123:
+-- Fix heap buffer overflows in unicode path conversion on Windows (bug 388,
+   thanks to Alejandro Ramos).
+-- Fix information disclosure of uninitialied memory for --auth-file without
+   line endings. (bug 390, thanks to Alejandro Ramos)
+-- Fix out-of-bounds read/write when combining --continue --random --listentry <n>
+   where n is larger than the playlist size. (bug 391, thanks to Alejandro Ramos)
+-- Fix a harmless valgrind memory leak report by not nulling playlist name.
+-- Fix error handling of win32_net_writestring() (Windows only) by actually using
+   a signed type, also preventing a OOB read on failure.
+   (bug 392 by Alejandro Ramos)
+-- Fix a mostly harmless OOB read of 1 byte when printing USLT lyrics.
+   (bug 392)
+-- Fix leaking file descriptor on read error from --equalizer file. (bug 392)
+-- Hardening of loading HTTP(S) via curl or wget against funky URLs by including
+   the -- separator. No actual vulnerability, tough, just extra care. (bug 392)
+- out123:
+-- Fix heap overrun on --endian conversion with differing input and output
+   channel counts. (bug 391)
+-- Fix parsing of filter specs with whitespace before commas, which resulted
+   in out-of-bounds writes before. (bug 391)
+- libmpg123, mpg123: Harden memory realloc calls against multiplication overflow
+  of size_t in arguments. Specifically, this addresses part of bug 389 with possible
+  application abuse of mpg123_set_index64(). (bug 389 by Alejandro Ramos)
+- libmpg123:
+-- Fix possible use of uninitialized values in layer III dequantization.
+   III_dequantize_sample() for consistent output also for strange input. The new
+   code seems to be slightly faster after some rearrangements.
+   (thanks to He Huang, Swinburne University of Technology (discovered using
+   NexusSan))
+-- Fix a double free when deleting a handle after failed mpg123_decoder() call
+   (possibly among others). (bug 389)
+-- More strong wording in API that ID3 text convenience links are short-lived,
+   but safeguard against ignorant use by nulling them early.
+   (bug 389)
+-- Prevent double free in mpg123_set_index() 32 bit wrapper being called with
+   index size 0. (bug 392)
+-- Harden against an application wielding a foot gun by handing in an undersized
+   decoding buffer betwee seek and read (return error before trying to decode
+   and discard frames in that case). (bug 392) 
+-- Do properly terminate ID3v2 texts coming in UTF16 encoding when they overwrite
+   previous frames, like with other encodings. The symptom was a shorter second
+   frame resulting in a combined text with the earlier longer frame.
+   (bug 392)
+-- Check and properly handle null source buffer and zero size in mpg123_store_utf8()
+   instead of reading past (before) buffers. (bug 392)
+-- Ensure clients get ID3v1 data with (unmotivated) mpg123_id3_raw()
+   only if the parser decided that it is there, not possibly the last 128 bytes of
+   a seekable stream without ID3v1 tag. (bug 392)
+-- Prevent impossible NtoM resampling with too low target rate (like 1 Hz) which
+   would trgger endless looping. (bug 392)
+- libout123:
+-- Fix deadlock in buffer mode when combined with (stereo) 24 bit output. Now
+   also mpg123 --buffer 4096 -e s24 shall actuallly work. Sorry. (bug 392)
+-- Abort early on zero/negative rate and channel count in out123_start().
+   (bug 392)
+-- Fix divide by zero in WAV writing by catching channel counts that go zero in the
+   16 bit WAV header field. (bug 392)
+- libsyn123:
+-- Explictly reject mismatched format for appending filters with
+   syn123_setup_filter(), preventing memory errors from that API-violating use.
+   (bug 392)
+-- Harden the dirty resampling interpolator against extreme rates (around 1e18 Hz)
+   by fixing a sample offset check to not do the exact overflowing addition
+   that it is supposed to guard against. The fine resampler was … fine. (bug 392)
+-- Error out on trying to create a filter of order 0 instead of dividing by zero
+   later. (bug 392)
+
+1.33.6
+------
+- mpg123
+-- Prepare for const-returning strchr().
+-- Hide seq_len debugging counter in non-debug mode (handle github PR 20).
+-- Fix memory leak with --network internal due to inverted NULL check in
+   net123_close_internal() (handle never NULL in practice, though; bug 386).
+- mpg123, out123: Fix strrchr() usage to be more const and correct under C99 as well
+  as C23 (handles PR 19 on the github mirror).
+- mpg123-strip: Also use largefile API properly using mpg123config.h, but without
+  actual effect at least on Linux/x86. It is cleaner that way, though.
+- ports/cmake: Yasm is not neeeded for Clang on MSVC (github PR 23, thanks to Alexander
+  Lobakin).
+- libmpg123: Remove unused loop variable in layer2 left over from runtime table
+  elimination (32 bit mmx/sse code, prompted by github PR 22).
+
+1.33.5
+------
+- mpg123: Fix generic control mode for largefile-sensitive builds, where 32 bit
+  off_t was used with mpg123 API calls expecting 64 bit off_t.
+  I am appalled that it took a user on 32 bit ARM and a specific https stream
+  to notice this (bug 385, regression since 1.32.0).
+  The security impact of this could be serious, with memory corruption including
+  segfault being observed.
+- mpg123-id3dump, out123: Enable 64 bit offset usage on largefile-sensitive
+  platforms (regression since 1.32.0).
+- libmpg123:
+-- Announce support for shadow stack / IBT in x86-64 assembly.
+-- Also announce PAC/BTI for non-accurate neon64 (aarch64) synth.
+- libout123: Add a safeguard to ensure variable-length records from buffer
+  communication are always zero-terminated.
+- libsyn123: Use union work buffer to avoid casts that may look like breaking
+  strict aliasing.
+
+1.33.4
+------
+- mpg123: In terminal control, ignore 7-bit escape sequences to avoid spurious
+  actions, e.g. when hitting cursor keys. Inspired by Peter Tirsek.
+- ports/cmake: Avoid possibly conflicting use of SIZEOF_OFF_T CMake variable
+  when embedding mpg123 with other projects using cmake and different off_t
+  semantics. (bug 382)
+
+1.33.3
+------
+- libmpg123:
+-- Fix build with newer toolchain on Android by using __ANDROID__ macro (bug 380).
+-- Consolidate and more consistently use .rodata switch in macro.
+
+1.33.2
+------
+- libmpg123:
+-- Do not modify raw ID3v2 data while parsing (bug 379). This used to be fine
+   before MPG123_STORE_RAW_ID3 got introduced. Not anymore.
+
+1.33.1
+------
+- INSTALL updated with hints for Windows, mainly.
+- Finally formatted README. Maybe do it in Markdown sometime, as that's
+  the fashion.
+- build:
+-- The ports/cmake only installs manpages for BUILD_PROGRAMS now.
+-- The configure gives better hint if pkg-config was missing during generation
+   (bug 378).
+- mpg123:
+-- Replace usage of signal() in terminal code with our sigaction() wrapper
+   to fix repeated handling for --sigusr1 and --sigusr2, which got subtly
+   broken on Linux + glibc by a feature test macro change in mpg123 1.31.
+
+1.33.0
+------
+- mpg123
+-- Fix printout of filenames at end (convert/limit text encoding).
+-- Treat HTTP header encoding as unknown/ASCII and formally convert to UTF-8.
+-- Make --continue mode work with --random.
+-- Handle possible failure of __wgetmainargs on Windows (bug 375).
+- mpg123-id3dump: Fix up command line arg handling for Windows.
+- out123
+-- Finally give zero exit code when generating sounds, not indicating
+   spurious failure.
+- build:
+-- Use CCASFLAGS for assembler tests, to enable builds that enable instruction
+   sets that way (bug 377).
+-- PIC for compat libs (convenience libs used during build) only if building
+   shared libs (github PR 17 by Wouter Wijsman).
+- compat:
+-- Map strtok use to strtok_r or strtok_s (MS platforms), if possible.
+   users only in control_generic and libout123 so far. Out123 itself uses mytok.
+   Shall fix bug 376 (build with MSVC again).
+-- Enable build on PSP by merging in the hotfix of opmitting signal code
+   (github PR 18 by Wouter Wijsman).
+- libout123
+-- modules/win32: Align waveOutGetDevCapsA to WAVEOUTCAPSA, in anticipation
+   of some UNICODE change.
+- libmpg123
+-- API version 49 with added mpg123_open_handle64(), mpg123_open64(), and
+   mpg123_open_fixed64() that are not subject to largefile renaming. This
+   means you can still access internal I/O with MPG123_PORTABLE_API. The
+   code has been there before, anyway.
+-- With MPG123_PORTABLE_API, mpg123_open_handle() is hidden now (use
+   mpg123_open_handle64() instead).
+-- more silence on errors (sideband limit message)
+
+1.32.10
+------
+- scripts/tag_lyrics.py: fix for python3 (thanks to cclauss,
+  github PR 16)
+- libout123: Use strtok_r() to avoid conflicts multithreaded contexts
+  (both sides should avoid plain strtok()! Debian-bug 1089543).
+- libmpg123:
+-- Un-break DLL builds that need I/O functions defined in libmpg123.c
+   (like mpg123_open(), bug 374).
+- ports/cmake: More fixup to also produce .pc files with Libs.private.
+
+1.32.9
+------
+- libmpg123:
+-- enable 64 bit offset path for MSVCRT and avoid warnings about
+   MS's game about POSIX API with and without underscores (bug 373).
+-- Increase the library patchlevel, as was forgotten on previous
+   release. Now you can check for distversion >= 1.32.8 or
+   mpg123 libversion >= 48 patchlevel 3 to see if you're vulnerable
+   to CVE-2024-10573.
+
+1.32.8
+------
+- libmpg123:
+-- Add sections to assembly to support PAC/BTI code
+   for aarch64 (-mbranch-protection variants), thanks to Bill Roberts
+   (github PR 15).
+-- Prevent premature application of header info into decoding structure,
+   at worst having triggered out-of-bounds writes of decoded PCM data
+   (bug 322, again). The bug got named CVE-2024-10573.
+- out123: Show --quiet in --longhelp.
+
+1.32.7
+------
+- ports/cmake: Work around bug in CMake that does not detect FPU on
+  Apple ARM CPUs (github PR 14).
+- Fix some laziness (func() to func(void)) for standards conformance.
+
+1.32.6
+------
+- build: Detect forced 64 bit offsets on a dual-mode system that used
+  to default to 32 bits and drop ambiguous suffix-less symbols in that
+  case. This avoids subtle ABI breakage (causing memory corruption)
+  with existing binaries and instead has them fail during runtime linking.
+  You trigger that when having -D_FILE_OFFSET_BITS=64 in your compiler
+  flags during mpg123 build.
+
+1.32.5
+------
+
+- build:
+-- CMake port uses CFLAGS for pulse/jack/tinyalsa properly now (bug 366).
+-- CMake port links libsyn123 with libm now (bug 370).
+- libmpg123:
+-- Fix --enable-portable (no usage of LFS_WRAP_NONE, bug 368).
+-- Fix dct36 wrapper usage for x86-64 and NEON. Stupid (bug 367) and
+   also avoid returning void.
+-- Make ARM builds work with nagging (missing feature macros for std=c99).
+
+1.32.4
+------
+- build:
+-- Reorganize shared headers, API headers into src/include.
+-- Use relative include paths, avoiding internal directories in
+   CPPFLAGS except for config.h.
+-- Group C99 feature checks and make several standard headers
+   mandatory.
+-- Get rid of SIZE_P, OFF_P and friends.
+-- Only enforce dummy module together with libout123, to be able
+   to build individual modules using --disable-components logic.
+- out123:
+-- added --libversion
+- libmpg123:
+-- Avoid indirect branches into the assembly routines by using C wrappers
+   also for dct36, relieving us of the need to care for bti / endbr
+   instructions for control flow integrity.
+
+1.32.3
+------
+- ports/cmake: Only enable modules with GetThreadErrorMode() on Windows.
+- compat: Define EOVERFLOW for ancient Windows toolchains.
+- libmpg123, libsyn123: always ifdef LFS_LARGEFILE_64 (not just if)
+- libsyn123: re-introduce _32 wrappers in addition to suffix-less ones
+  (regression from 1.31, bug 363)
+
+1.32.2
+------
+- libmpg123: Re-introduce _64 symbols on native 64 bit offset platforms. This
+  was a regression since 1.31 series. Sorry, too much cleanup, not enough
+  testing.
+- build:
+-- Better O_LARGEFILE logic, avoiding redefintion.
+- ports/cmake:
+-- Require C99 (bug 360, among other points, thanks to Ozkan Sezer).
+-- Fix broken O_LARGEFILE logic (bug 360).
+-- Typo fix and cleanup, also manual SSE switch for Android on old x86 (bug 359).
+
+1.32.1
+------
+- Include man pages again in tarball and install. We cannot avoid the empty
+  man directory when disabling programs with autoconf.
+- Fix signal handler prototype, avoiding some justified warnings.
+- ports/cmake:
+-- Include CheckTypeSize, which seems to be needed sometimes (bug 357).
+-- Avoid O_LARGEFILE redefinition, logic closer to autoconf.
+
+1.32.0
+------
+- build:
+-- Move version handling out of configure.ac to ease other build systems.
+-- Include "fmt123.h" instead of <fmt123.h> in main API headers to make it more likely the
+   correct one is included (at least gcc picks the one in the same directory as the
+   including header first).
+-- All headers are build-independent now.
+-- Fix build for picky linkers by avoiding definition of wrap_getcpuflags() where it is not
+   used (spurious linker error to non-exitent getcpuflags(), bug 353).
+-- Handle deprecation of C99 detection macro in autoconf 2.70.
+-- No use of AC_SYS_LARGEFILE anymore for explicit handling and differing choice for
+   the libraries and frontend programs.
+-- Added --enable-portable and --disable-largefile to configure, removing the other
+   largefile-related options.
+-- Added --disable-components --enable-libmpg123 to only build libmpg123 (and likewise
+   --enable-libout123, --enable-libout123-modules, --enable-libsyn123) to autoconf
+   build. CMake build has something  similar with BUILD_PROGRAMS and BUILD_LIBOUT123,
+   which leave only libmpg123 and libsyn123 if disabled). (bug 351)
+-- Consistent formatting of ./configure --help with AS_HELP_STRING().
+- ports/Sony_PSP: removed
+- mpg123:
+-- Added --libversion.
+-- Added proper A-B looping with terminal control key 'o', renamed
+   --pauseloop to --presetloop.
+-- Really get rid of mpg123_position() usage. (It was all lies before!)
+-- Fix terminal progress info when seeking in stopped mode (1.31 regression).
+-- Patch up interaction of output buffer with generic remote control, adding
+   non-interruptible drain after P 3, and dropping buffer on QUIT.
+-- Uppercase some generic control replies for consinstency: SILENCE, PROGRESS,
+   MUTE, UNMUTE
+- libmpg123, libout123, libsyn123:
+-- Bumped API version for version query functions.
+-- Replaced nearly all symbol renames with explicit INT123_ prefix declarations
+   (intsym.h close to empty now).
+- libout123:
+-- Add sleep builtin output module (silent, but proper timing).
+- libsyn123:
+-- Introduced SYN123_PORTABLE_API for an API without off_t and ssize_t
+   (see NEWS.libsyn123).
+- libmpg123:
+-- Internal I/O using explicit largefile support via off64_t, lseek64, fallback
+   to plain 32 bit off_t.
+-- Added explicit 64 bit API with 64 suffix (mpg123_tell64(), not mpg123_tell_64()).
+   This allows full avoidance of ambiguus off_t. The API is always using 64 bit
+   integers, regardless of internal implementation. (bug 344)
+-- Introduced MPG123_PORTABLE_API for an API subset without off_t and
+   ssize_t.
+-- Made mpg123_seek() and friends ignore offset sign for SEEK_END (always seeking
+   towards beginning, assuming negative offset) to make lseek()-conforming usage
+   possible. Seeking beyond the end never made sense, so no loss of valid functionality.
+- Overall use of INT123_strerror(), trying to use thread-safe strerror_l() if possible.
+
+1.31.3
+------
+
+- build:
+-- Fix --disable-8bit.
+-- Fall back to generic decoder if no yasm for MSVC (bug 346).
+-- Fix some pedantic compiler warnings, avoid breaking libtool wrappers.
+- mpg123:
+-- Fix verbose position printout for new resampling outside libmpg123 (where
+   output rate differs from decoding rate).
+- libsyn123:
+-- Fix reconfiguration of resampler to avoid double free when reducing
+   decimator stages to zero (bug 350). Thanks to Youngseok Choi for reporting
+   this fuzzed issue.
+
+1.31.2
+------
+- Fix build --with-network=internal only (configure logic error, bug 348).
+- Fix OS/2 build with getaddrinfo() (which may support IPv6 eventually, thanks
+  to Dave Yeo).
+
+1.31.1
+------
+- Fix largefile aliases for the case of a largefile-insensitive build
+  that still does define _FILE_OFFSET_BITS from the outside
+  (sys/feature_tests.h on Illumos).
+
+1.31.0
+------
+
+- mpg123:
+-- Finally make terminal control work on Windows, for real. Building it
+   was broken in 1.30.x.
+-- The --control / -C switch will make mpg123 abort now if terminal
+   control cannot be enabled.
+-- Revert to internal network code for plain HTTP to ensure continued
+   support for original shoutcast servers that do not talk proper HTTP.
+   External backends are built at the same time and can be enforced using
+   --network <backend>.
+-- Try-witout-port for internal network code is gone. We do not need to
+   keep each ancient hack for specific hosts.
+-- Handle redirections independently of the backend behind net123. 
+-- Set proxy environment variables when --proxy is specified, for net123
+   backends to use.
+-- Continue reading for long commands in generic control, avoiding
+   unnecessary unfinished command errors.
+-- Change error message from 'unknown command' to
+   'unknown command with arguments' to avoid confusion why 'help foo'
+   is unknown, as opposed to 'help'.
+-- Reduce CPU load while just waiting for terminal input
+   (thanks to bolshoytoster on github).
+-- Condense terminal control help output and excessive vertical whitespace
+   in printouts (inspired by Volkmar Klatt).
+-- Fix interaction of pause (looping) with buffer, adding --pauseloop
+   to set the loop interval.
+-- Numeric option arguments are strictly checked now for conversion errors.
+   This also catches -devbuffer, which was interpretd as -d 0 before. This
+   also applies to out123.
+- libout123:
+-- Add same interruption handling to out123_write() as to
+   unintr_write(), adding EAGAIN to fix bug 342 (thanks to Steffen Nurpmeso)
+   for certain ALSA setups.
+-- Add --devbuffer support to win32 output and change default to 0.25 seconds.
+-- Fix race condition to deadlock on buffer_sync_param() where parameters after
+   the command byte got read as more commands. This got triggered easily by
+   using the pause key in terminal mode with buffer (which was discouraged
+   before because of buffer flushing). Generally, changing parameters with
+   active buffer process was dangerous since libout123 entered the scene.
+- some build fixes for compiler pickyness
+- Disable largefile renames also for non-sensitive POSIX systems
+  (in some distant future, the alias symbols could go away, then …
+  bug 330).
+- Fix Android NDK x86 builds with GLOBAL_VAR_PTR use in assembly (bug 345).
+
+1.30.2
+------
+- Only use EWOULDBLOCK if the macro is defined (FreeBSD misses it for
+   _POSIX_SOURCE, bug 339).
+
+1.30.1
+------
+- mpg123:
+-- Show stderr of network helpers in -vvv mode.
+-- Use curl --http0.9, if available, to support shoutcast v1 streams
+   without wget (wget not needing such switch, yet).
+-- Support file:// URLs for local access as was intended with the last
+   release.
+-- Give more helpful error message if neither wget nor curl are usable, also
+   allow error messages from curl to appear when not --quiet.
+-- Update the man page.
+
+1.30.0
+------
+- build:
+-- Use dummy as default module when no other outputs are enabled. This also
+   fixes a non-module build with just the dummy (bug 333).
+-- Use CMAKE_CURRENT_SOURCE_DIR in CMake build to help nested use (bug 335).
+-- some updates for OS/2 support (fixing up stdin playing, for example)
+- mpg123:
+-- new network backend using external tools/libraries to also support HTTPS
+-- old network backend changed to use h_addr_list[0] instead of h_addr
+-- terminal control keys now case-sensitive (fixing smal/big pitch controls)
+-- additional terminal control keys for simple equalizer control (A/a for bass,
+   J/j for mids, N/n for treble, e for reset, E for printout)
+-- terminal volume control now in decibel steps and bounded to +/- 60 dB
+-- terminal control now also with audio from stdin (bug 338) via
+   /dev/tty or ctermid()
+-- terminal control also available for OS/2 and Windows platforms
+-- re-print tag info on decrease of terminal width for a bit less mess
+-- always print an empty line after tag info for cleaner appearance
+-- print lyrics also to stderr
+-- remote control API v10 with "@P 3" as additonal message on track end
+-- also added PROGRESS command as opposite of SILENCE
+-- fix some verbosity, tweak help for --icy-interval
+-- added --auth-file
+-- also obscure argument to --auth for others
+-- Cygwin/MinGW: Provide _win32_utf8_wide and _win32_wide_utf8 unconditionally.
+   It is needed by the WASAPI plugins, the underlying conversion functions
+   should be present since Windows 2000. Fixes WASAPI support on Cygwin.
+   Also needed for new network code.
+- libout123:
+-- pulse: initialize more error codes to avoid bogus error messages
+-- os2: considerable fixup for proper writes of full buffers avoiding
+   nasty effects from the ... special audio system, more cleanup still
+   nice-to-have, but still lacking
+
+1.29.4
+------
+- libmpg123:
+-- Saturate reader file position at off_t limit to satisfy
+   undefined behaviour checkers.
+-- Avoid harmless unitialized value in ID3v1 check (filepos, later being
+   set before actual use).
+- libout123:
+-- Build fix for win32_wasapi output for predefined _WIN32_WINNT (bug 329),
+   thanks to Vincent Torri.
+
+1.29.3
+------
+- libmpg123: Catch more NULL pointer arguments in LFS wrappers
+  (most prominently: mpg123_feedseek(), bug 328).
+- mpg123:
+-- Fix regression that did _not_ enable --remote-err on -s anymore.
+-- Fix typos in man page (thanks to Naglis Jonaitis).
+-- Drop mixed-up value limits on remote control SEQ command. It is up to you
+   if you want to distort your sound.
+-- Add note about equalizer frequency bands to man page.
+- build: add BUILD_PROGRAMS option to ports/cmake
+
+1.29.2
+------
+- libmpg123: Fix non-live-decoder safeguard for mpg123_framebyframe_decode()
+  (was a no-op in practice, bug 324).
+
+1.29.1
+------
+- mpg123:
+-- Keep default output encoding of s16 for raw and file outputs
+   also with the new resampler. This reverts the unintentional change in
+   1.26.0 of switching to f32 for forced output rate unless the NtoM
+   resampler is selected. In any case, you should make sure to specify
+   your desired --encoding if you depend on it.
+-- Catch error in indexing (mpg123_scan() return value was ignored
+   before, bug 322).
+- mpg123-strip: Lift the resync limit, as it should be to clean up really
+  dirty streams.
+- mpg123-id3dump: Also lift resync limit for the same reasons.
+- libout123: fix reporting of device property flags for buffer
+- libmpg123: more safeguarding against attempts to decode if decoder
+  setup failed and user ignored the returned error code (bug 322)
+
+1.29.0
+------
+- build: added --enable-runtime-tables
+- libmpg123:
+-- Float deocder runtime table computation is back as option,
+   based on suggestion and initial patch by Ethan Halsall for a smaller
+   download size of the wasm decoder built from libmpg23. This only
+   trims the size of the binary on disk (network), for runtime
+   overhead and a bit of uneasyness about concurrency during table
+   computation, which happens implicitly on handle initialization,
+   only guarded by an integer flag. This does _not_ revive
+   mpg123_init().
+-- The ID3v2 UTF-16 BOM check is now a straight-on loop and not a
+   recursive function.
+
+1.28.2
+------
+- libout123
+-- Complete the fix for bug 314, reopening the device after format
+   setup failure.
+
+1.28.1
+------
+- build:
+-- Explain --with-default-audio in configure help better.
+-- Fix build of arm_fpu (regression of configure reorg).
+-- Re-introduce AC_PROG_C_C99 macro for autoconf 2.69, it's only
+   obsolete after that.
+-- Un-break CMake build for botched move of CheckCPUArch.c.in (bug 315).
+-- Avoid conflict of warning macro with MSVC pragmas in two places. Also
+   fix UWP build with strerror check and move down inclusion of intsym.h
+   (bug 316).
+-- Disable libout123 (and mpg123, out123) on UWP with cmake to get at least
+   the decoder lib built (317).
+-- Hack around CMake bug(?) with QUERY_HAS_FPU to make ports/cmake also
+   work in MinGW (bug 318).
+- libmpg123:
+-- Make mpg123.h.in usable again with MPG123_NO_CONFIGURE,
+   for external uses (bug 313).
+-- Use predefined MPG123_API_VERSION in mpg123.h.in for the same.
+-- Better handle the ssize_t situation via typedef mpg123_ssize_t, less
+   likely to be broken in future MSVC versions.
+-- Fix an integer constant definition for the most negative 32 bit numnber to
+   avoid justified compiler complaints.
+- libsyn123:
+-- More support for MPG123_NO_CONFIGURE.
+-- Optionally use predefined SYN123_API_VERSION in syn123.h.in for the same.
+-- Add a cast to silence integer sign warning for offset in muloffdiv64()
+   (bug 317)
+- libout123:
+-- Pulse module advertises wider format support now, not
+   just s16. This makes mpg123 -e s24 work with it, not just out123.
+-- Optionally use predefined OUT123_API_VERSION in out123.h.in for
+   non-configure use.
+-- Fix sndio output to properly query device format support and get
+   default fomat on FreeBSD (bug 314).
+
+1.28.0
+------
+- build:
+-- Fix up the build to actually build all library objects with libtool
+   consistently, also ensuring no pointless static archives for output
+   modules.
+-- Adapted things to autoconf 2.71, requiring 2.69 now (the latter tested
+   on Debian, with their patches).
+-- Improved configure to be more useful --with-default-audio to define
+   the search order, fix static build for --with-audio being a list
+   (just choosing the first one).
+-- Ensure consistent use of LINK_MPG123_DLL in headers.
+- build (ports/cmake):
+-- Thanks to Evgeni Poberezhnikov for working with us on that.
+-- Fix up ports/cmake to really work in MSVC also for users of the lib
+   (tested in vcpkg, bug 310).
+-- Hardcode ports/cmake CPU detection for x64 and ARM as
+   CMAKE_SYSTEM_PROCESSOR is useless crap (bug 298 for real).
+-- Add missing io.h for _setmode() MSVC warned about (bug 311).
+-- Added BUILD_NO_LARGENAME define to be used by MSVC builds. Note that
+   an MSVC build of libmpg123 does not support 64 bit file offsets.
+   That would need more morting to the explicit API. Thanks to MS for
+   making off_t even more messy and less useful.
+-- Added JACK output, fixed handling of compat_str there and in win32_wasapi.
+- libsyn123: Fix syn123_mix() to actually do intermediate conversion
+  when input and output encoding are the same but non-float. This makes
+  out123 --mix work with s16 input and output, which is not that special!
+- libmpg123: Fix misguided handling of part2_3_length checks in
+  III_get_scale_factors_1() and III_get_scale_factors_2() which invalidated
+  decoding of a mono source encoded as ms+i-stereo (bug 312). This was
+  a regression introduced with version 1.25.7.
+- libout123:
+-- Print basic module loading errors only for last one in list.
+   This enables use of an output module search list that anticipates module
+   files not installed with the main package.
+-- Fixes for win32_wasapi build with MSVC.
+
+1.27.2
+------
+
+(Trying some svn tag discipline: 1.27.1 has been tagged before, but
+not released. Let's increment for any change.)
+
+- Removed ports/Xcode, ports/cmake should handle that case.
+- Ensure debug.h is included last where it matters to avoid
+  conflicts with debug/warning macros in system headers
+  (bug 308).
+- Fix some debug/printf integer casts for 32 bit platforms (bug 309).
+
+1.27.0
+------
+
+- libmpg123:
+-- Running on precomputed tables now, no need to call
+   mpg123_init() anymore. That and mpg123_exit() are both just
+   empty shells. You can omit them if you do not care about earlier
+   libmpg123. You can check for MPG123_API_VERSION >= 46.
+-- Added API that avoids enums, mapped-to by default unless
+   MPG123_ENUM_API is defined.
+- libout123:
+-- Added API that avoids enums, mapped-to by default unless
+   MPG123_ENUM_API is defined.
+-- Added device enumeration for win32, win32_wasapi, alsa, pulse.
+   This increments the output module ABI version to 3.
+-- You can choose output devices now on Windows.
+-- Changed default output module order to put pulse before alsa since
+   we now ensure that pulse is not inadvertedly started by the
+   autospawn feature. This improves the experience on desktop
+   systems with pulse where the alsa to pulse use causes glitches.
+   Note that on a modern Linux desktop (Ubuntu), you will not
+   escape an instance of pulseaudio being started, with even the
+   enumeration of the ALSA default device summoning the daemon.
+   If you _want_ sound daemon autospawn behaviour on other platforms,
+   you need to trigger it outside of libout123.
+- examples: Update for dropped mpg123_init(), more sensible
+  copyright notes.
+- out123:
+-- safer limiting of maximum playback rate
+-- Added --list-devices.
+- mpg123:
+-- Fix --continue output to print track_count+1 as continue
+   position after hitting the end of playlist. Makes scripts/conplay
+   go to back to the beginning again (regression in 1.24.0, bug 250).
+-- Remote control API version 9 with @I { .. @I } wrapping of ID3 and
+   playlist display.
+-- Added --list-devices.
+-- Fix console printout on Windows.
+-- Fix terminal control logic to better handle cases where stdin or
+   stderr is not a terminal, also avoid enabling control if you specify
+   stdin as input file.
+- Updated debugging/warning/error message macros to include the function
+  name.
+
+1.26.5
+------
+- Add ./configure --enable-xdebug (for the resampler issue).
+- Avoid denormals in the resampler by adding an alternating offset
+  (helps performance without -ffast-math, depending on platform).
+- libmpg123:
+-- Fix ID3v2 APIC parsing when frame length bit is set (bug 306).
+-- Also handle the group flag (skip the group byte).
+-- Also fix up frame flag handling for ID3v2.3. Did not crop up yet,
+   but it was just wrong. Impact was not detecting and bailing out on
+   compressed or encrypted frames properly.
+
+1.26.4
+------
+- Clarify seeking documentation regarding samples and PCM frames.
+- Fix build on MorphOS (patch by Ozkan Sezer, bug 295).
+- Fix cmake build to install fmt123.h.
+- Some cmake build fixes, tinyalsa addition by Maarten (bug 299).
+- libmpg123: explicitly handle some irrelevant corner cases in tabinit
+  (bug 279)
+
+1.26.3
+------
+- Fix accurate (--enable-int-quality) and s32 x86-64 assembly for Windows ABI
+  (thanks to Robert Kausch of fre:ac). The accurate code just crashed before.
+
+1.26.2
+------
+- Enable terminal control by default only when both input and output
+  are connected to a terminal. This avoids messing with terminal settings
+  when piping stderr to a pager, which takes over terminal input anyway,
+  while mpg123 still thinks it got control.
+- Windows build fixes for UWP and without GetThreadErrorMode when not
+  building modules, thanks to Steve LHomme.
+- Android build fix regarding off64_t use, thanks to Steve LHomme.
+- More CMake build fixes thanks to David Callu (bug 290).
+- Use PROG_LIBS for output modules, to reinstate not necessarily proper but
+  previous behaviour and fix FreeBSD port build (bug 291).
+- Refine LFS support in libsyn123, avoiding architecture-dependent syn123.h
+  (debian bug 963205).
+
+1.26.1
+------
+- Fix cmake build by actually including the read_api_version file in the distro.
+- Fix big-endian build, stupid omission of a variable declaration, semicolon
+  (bug 289).
+- Silence a harmless warning for build without realtime priority.
+
+1.26.0
+------
+
+- Starting to intentionally use C99 in the codebase. API headers are still
+  supposed to be compatible to C89.
+- There is a make check target now with some simple tests.
+  It is an open question how that should be developed in relation to the
+  external regression and compliance test suite.
+- Finally silenced memory checkers about leaking memory from getlopt()
+  (main code overwriting values without freeing strdup() strings).
+- AUTHORS now in UTF-8;-)
+- CMake build files in ports/cmake, as an alternative to create MSVC
+  project files and the like (thanks to Vitaly Kirsanov)
+- Default build with proper integer rounding (--enable-int-quality) now.
+- Cygwin/midipix autoconf fixes (thanks to Redfoxmoon).
+- Updated Windows build script, notably renaming .dll.def to .def.
+  Requires an argument now for build type, an optional one for
+  parallel make (not that useful on MinGW).
+- Rework library dependency handling to avoid unnecessary linking for
+  lib*123. Also add proper Libs.private to .pc files to enable static
+  usage (especially on Windows with shlwapi).
+- Updated support for OS/2 in the form of ArcaOS.
+- Removed outdated Pascal port (ports/mpg123_.pas). There are others
+  out there.
+- Updated man pages, been a while.
+- mpg123:
+-- Fixed-rate playback now prefers the libsyn123 resampler instead of NtoM
+   in libmpg123, see --resample parameter.
+-- Drop --STDOUT (never properly implemented, use pipe to out123 instead).
+-- Make --streamdump use unintr_write() to avoid inconsistencies.
+-- Now sets non-zero exit code when any one track of the playlist
+   fails to either produce at least one frame of playback, if there
+   is data that should produce such (i.e. /dev/zero is bad, /dev/null is
+   fine). See man page for details.
+-- Print out MPEG header info for each frame for mpg123 -vvvv.
+-- Added --no-visual to disable cursor/inverse video games explicitly.
+-- Clear progress bar before printing updated metadata within a stream.
+-- Filter control/non-printable characters from user data printout, reduce
+   ID3v1 data to 7-bit ASCII (no way to know correct 8-bit encoding for sure).
+   This should  cover bug 267.
+-- Set MPG123_NO_PEEK_END when opening special file '-' (standard input).
+   That helps Windows where attempting to seek on the non-seekable stream
+   is undefined behaviour (bug 285).
+-- Print errors in player code also for --quiet operation (just no messages
+   from the libraries).
+-- Ignore ID3v1 once a Frankenstein stream was detected.
+-- Prevent a cosmetic use-after-free in audio playback during program abortion just after
+   starting playback (prebuffer still in use, implication a blip of bad sound and
+   a complaining sanitizer).
+-- Reformat audio capabilities table, more condensed, fits into 80 columns.
+   Forced rate on a separated line.
+-- Make --pitch actually work, not just interactive changes. Pitching uses
+   a resampler now if a fixed output rate is specified.
+-- Added --no-frankenstein.
+-- Frameflags as long variable, 32 bits are needed since some time now.
+- out123:
+-- Document --STDOUT, make it more robust regarding fwrite() interruptions.
+-- Removed the implicit phase shift that made generated waves exactly at
+   Nyquist freq non-silent, but made little sense overall.
+-- Less high-frequency shifts to make waves fit into the table (not insisting
+   on even number of samples).
+-- Option to work without wave table (setting the limit to zero).
+-- Added --wave-direction to also enable backward time without phase shift.
+-- Waves now generated by re-usable little synthethizer library dubbed
+   libsyn123.
+-- Pink noise from libsyn123 added (using code from Phil Burk).
+-- White noise from libsyn123.
+-- Geiger-Mueller counter simulation from libsyn123.
+-- Wave sweep generator from libsyn123.
+-- Some rearrangement in help text.
+-- Changed output of --test-encodings to list of encoding names
+   instead of raw bitmask value.
+-- Added --endian, --inputend, and --byteswap.
+- libsyn123:
+-- Created the library to host some simple signal generators for testing
+   output.
+-- It also hosts sample format conversions as a necessity to be able to
+   directly produce the format output devices need.
+-- Well, also channel mixing while we're at it.
+-- Oh, and a minimal-latency-and-reasonably-efficient resampler that only
+   took me over a year to figure out. I should write a paper about it.
+- libout123:
+-- Added out123_free() for the benefit of library wrappers. (bug 276)
+-- Removed change of effective user ID in the WAV/RAW/AU/CDR writer.
+   This was intended as a safeguard to avoid creating files with root
+   priviledges. But: Other output modules still allowed root-level
+   access to various devices and files, so it was never safe to do
+   something awful like installing mpg123 with suid bit or configure
+   sudo to allow users to run mpg123 with arbitrary arguments.
+   You should treat out123_open just like the regular open(): You can
+   write to any file/device depending on your permissions.
+-- Finally maybe fixed the damaged playback when using pulse hidden
+   behind the ALSA API (on Ubuntu, for example) by setting a high value
+   for device start threshold.
+-- Fixed out_play() abortion logic to better detect fatal situations
+   (broken pipe). Needed on FreeBSD, while Linux buffers the issue away.
+   Should resolve bug 283.
+-- Limit size of buffer block being written in out123_play to 16K, avoiding
+   unnecessary failure with ALSA at least.
+-- Using SDL2 now if found. Output module code unchanged.
+-- Added hex and txt (plain text) printout.
+-- Eliminated spots where error messages would still be printed
+   also for OUT123_QUIET being effect.
+-- Dummy output accepts any encoding now.
+- libmpg123:
+-- Added mpg123_open_fixed() to ease API for applications that just
+   want to decode well-behaved local files.
+-- The user buffers for audio output data are now declared as void* for
+   mpg123_read(), mpg123_decode(), and mpg123_replace_buffer() to avoid
+   the useless need for casting your nice int16_t buffer to unsigned char
+   for decoding MPG123_ENC_SIGNED_16 data to it.
+-- Added mpg123_free() for the benefit of library wrappers. (bug 276)
+-- Add mpg123_format2() and mpg123_fmt2() supporting special value 0 for all
+   rates.
+-- Fix changing of decoder (and output format along with that) after stream
+   opening. This was never recommened and only now should work at all.
+-- Also mpg123_decode_frame() now sets return buffer to NULL and returned byte
+   count to zero in case of MPG123_NEED_MORE (or any other early abort).
+-- MPG123_NEED_MORE not returned anymore for non-feeder streams. Got in
+   there for generic partial frame body reads, but was only intended for
+   feeder API.
+-- Added mpg123_set_moreinfo() to support the Lame project's frame analyzer,
+   disabled by ./configure --disable-moreinfo.
+-- Added optional storage and retrieval of raw ID3 data.
+-- Fix skipping of ID3v2 footers (too much was attempted to be skipped). This
+   is of not much practical consequence as a tag with footer would appear on
+   the end of files anyway and files with ID3v2 tags at the end seem to be
+   rather rare.
+-- Add mpg123_new_string() and mpg123_delete_string() to avoid confusion
+   about what mpg123_init_string() and mpg123_free_string() do.
+-- Make mpg123_resize_string() terminate the string if shrinking (fill now
+   limited to new size).
+-- Improve layer III frame parsing/error reporting for bad part2_3_length.
+-- Fix crashing on stupidly low NtoM rates (exceeding downsampling factor 31).
+   This was only triggered by you specifying a forced sampling rate below 1550 Hz.
+-- Do not remove CRC bits twice from possibly available bit reservoir.
+   This move needed recomputation of the layer3is reference data for 8 and
+   24 kHz. Old mpg123 is _wrong_ in the first few frames.
+-- Generally more tight control and early bail out on reading bits of
+   frame data for all layers. This reduces the count of error messages
+   on badly damaged files a lot and feels a lot safer, too. Note that
+   we already silently returned zero bytes instead of actually over-reading
+   the frame buffer before, but now it happens with diagnostics and more
+   checks before it may happen.
+-- Optionally enforce output endianess (big/little) away from native.
+-- Fix build without error messages.
+-- Fix build without gapless decoding.
+-- Disable buffer when neither mmap nor shm functions detected (fixes
+   build for Android, thanks to vquicksilver).
+-- Some support for extremely small streams (below 128 bytes). Those are
+   too short to contain anything useful besides some tiny metadata, but
+   serve to find/reproduce parser bugs.
+-- Fix mpg123_read() for builds without feeder. It calls mpg123_decode()
+   without feeding input, which was disabled by mistake. The use of
+   mpg123_read() (instead of mpg123_decode_frame()) with mpg123_open()
+   was broken in feederless builds since those were fixed in version 1.15.
+-- Fix ID3v2 parser logic for multiple ID3v2 tags being encountered in one
+   stream. New tags replace old data instead of appending to it when the
+   extended header update flag is not set (ID3v2.4). Update tags only
+   replace data that shall be unique. So far, I have never seen an update
+   tag in the wild, so the check for the flag is untested. The mechanism
+   of replacing parts of existing tag data has been tested, though.
+   Note that the updated libmpg123 also avoids a growing ID3 data structure
+   when repeatedly seeking back to the beginning in a file with disabled
+   seek index.
+-- Eliminated a spots where error messages would still be printed
+   also for MPG123_QUIET being effect.
+-- Added MPG123_NO_FRANKENSTEIN, MPG123_FLOAT_FALLBACK flags.
+-- Now actually try floating point encoding if format matrix allows it
+   (can be disabled by unsetting MPG123_FLOAT_FALLBACK).
+-- Added mpg123_feature2() that takes an int, as enums are not ABI-safe,
+   also added feature queries for floating point output. 
+
+1.25.13
+-------
+
+This is a bugfix release solely for bug 280 in the parser:
+
+- libmpg123
+-- Reset the flag for having a frame to decode before trying to
+   parse a new one. This prevents very unkind behaviour (crashes)
+   when combinging mpg123_scan() with decoding later on for damaged
+   streams that have a mixture of different MPEG versions.
+
+1.25.12
+-------
+
+More credit to OSS-Fuzz. The ID3v2 parser code is not yet as hardened
+as the actual MPEG decoder. The paranoid can disable it at build-time.
+If you do not need it, this is a good idea, anyway: Code that is not
+there, cannot be exploited. Speaking about exploits: The recent crop
+of bugs trigger a denial of service (crash) worst-case, some invalid
+ID3 data normally. Code injection maybe not totally ruled out (that one
+write of a zero byte?), but does not seem easy. Update to be sure that
+you are only suceptible to as of yet hidden bugs.
+
+- libmpg123
+-- Fix an out-of-bounds read of maximal two bytes for truncated RVA2 frames
+   (oss-fuzz-bug 15975). The earlier fix around the same location needed
+   one thought more. Actually, another though was needed, oss-fuzz-bug 16009
+   documents the incomplete fix.
+-- Fix an invalid write of one zero byte for empty ID3v2 frames that demand
+   de-unsyncing (oss-fuzz-bug 16050).
+-- Correct preprocessor syntax in mangle.h, no #error in a #define line.
+   (bug 273, thanks to nmlgc).
+- Fix dynamic build with gcc -fsanitize=address (check for all dl functions
+  before deciding that separate -ldl is not needed).
+
+1.25.11
+-------
+
+So, here is a number of bugs found by OSS-Fuzz. Credit to OSS-Fuzz
+for the bunch, then.
+
+- libmpg123:
+-- Fix out-of-bounds reads in ID3 parser for unsynced frames.
+   (oss-fuzz-bug 15852) 
+-- Fix out-of-bounds read for RVA2 frames with non-delimited identifier.
+   (oss-fuzz-bug 15852)
+-- Fix implementation-defined parsing of RVA2 values. (oss-fuzz-bug 15862)
+-- Fix undefined parsing of APE header for skipping. Also prevent
+   endless loop on premature end of supposed APE header. (oss-fuzz-bug 15864)
+
 1.25.10
 -------
 

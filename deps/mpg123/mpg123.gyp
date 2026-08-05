@@ -42,6 +42,13 @@
           ['target_arch=="x64"', { 'xcode_settings': { 'ARCHS': [ 'x86_64' ] } }]
         ],
       }],
+      ['OS=="win"', {
+        'link_settings': {
+          'libraries': [
+            '-lshlwapi.lib',
+          ],
+        },
+      }],
     ]
   },
 
@@ -74,6 +81,7 @@
         'src/libmpg123/id3.c',
         'src/libmpg123/optimize.c',
         'src/libmpg123/readers.c',
+        'src/libmpg123/lfs_wrap.c',
         'src/libmpg123/tabinit.c',
         'src/libmpg123/libmpg123.c',
         'src/libmpg123/index.c',
@@ -91,8 +99,10 @@
 	'src/compat/compat_str.c'
       ],
       'include_dirs': [
+        'src/include',
         'src/libmpg123',
         'src/compat',
+        'src/common',
         'src',
         # platform and arch-specific headers
         'config/<(OS)/<(target_arch)',
@@ -103,8 +113,13 @@
         'HAVE_CONFIG_H',
       ],
       'direct_dependent_settings': {
+        'defines': [
+          'MPG123_NO_LARGENAME',
+        ],
         'include_dirs': [
+          'src/include',
           'src/libmpg123',
+          'src/common',
           # platform and arch-specific headers
           'config/<(OS)/<(target_arch)',
         ]
@@ -171,95 +186,6 @@
           ],
         }],
       ],
-    },
-
-    {
-      'target_name': 'output',
-      'product_prefix': 'lib',
-      'type': 'static_library',
-      'variables': {
-        'conditions': [
-          # "mpg123_backend" is the audio backend to use
-          ['OS=="mac"', { 'mpg123_backend%': 'coreaudio' }],
-          ['OS=="win"', { 'mpg123_backend%': 'win32' }],
-          ['OS=="linux"', { 'mpg123_backend%': 'alsa' }],
-          ['OS=="freebsd"', { 'mpg123_backend%': 'alsa' }],
-          ['OS=="solaris"', { 'mpg123_backend%': 'sun' }],
-        ]
-      },
-      'include_dirs': [
-        'src',
-        'src/output',
-        'src/libmpg123',
-        # platform and arch-specific headers
-        'config/<(OS)/<(target_arch)',
-      ],
-      'defines': [
-        'PIC',
-        'NOXFERMEM',
-        'REAL_IS_FLOAT',
-        'HAVE_CONFIG_H',
-        'BUILDING_OUTPUT_MODULES=1'
-      ],
-      'direct_dependent_settings': {
-        'include_dirs': [
-          'src',
-          'src/output',
-          'src/libmpg123',
-          # platform and arch-specific headers
-          'config/<(OS)/<(target_arch)',
-        ]
-      },
-      'conditions': [
-        ['mpg123_backend=="alsa"', {
-          'link_settings': {
-            'libraries': [
-              '-lasound',
-            ]
-          }
-        }],
-        ['mpg123_backend=="coreaudio"', {
-          'link_settings': {
-            'libraries': [
-              '-framework AudioToolbox',
-              '-framework AudioUnit',
-              '-framework CoreServices',
-            ],
-          },
-        }],
-        ['mpg123_backend=="openal"', {
-          'defines': [
-            'OPENAL_SUBDIR_OPENAL'
-          ],
-          'link_settings': {
-            'libraries': [
-              '-framework OpenAL',
-            ]
-          }
-        }],
-        ['mpg123_backend=="win32"', {
-          'link_settings': {
-            'libraries': [
-              '-lwinmm.lib',
-            ],
-          }
-        }],
-      ],
-      'sources': [ 'src/output/<(mpg123_backend).c' ],
-    },
-
-    {
-      'target_name': 'test',
-      'type': 'executable',
-      'dependencies': [ 'mpg123' ],
-      'sources': [ 'test.c' ]
-    },
-
-    {
-      'target_name': 'output_test',
-      'type': 'executable',
-      'dependencies': [ 'output' ],
-      'sources': [ 'test_output.c' ]
     }
   ]
 }

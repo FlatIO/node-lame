@@ -8,9 +8,9 @@
 */
 
 #include "config.h"
-#include "compat.h"
+#include "compat/compat.h"
 #include "getlopt.h"
-#include "debug.h"
+#include "common/debug.h"
 
 int loptind = 1;	/* index in argv[] */
 int loptchr = 0;	/* index in argv[loptind] */
@@ -33,7 +33,35 @@ topt *findopt (int islong, char *opt, topt *opts)
 	return (0);
 }
 
-static int performoption (int argc, char *argv[], topt *opt)
+static void setcharoption(topt *opt, char *value)
+{
+	if(!opt->var)
+	{
+		merror("Option %s has no argument pointer!", opt->lname);
+		return;
+	}
+	if(opt->flags & GLO_VAR_MEM)
+		free(*((char**)opt->var));
+	if(value)
+	{
+		*((char **) opt->var) = INT123_compat_strdup(value);
+		opt->flags |= GLO_VAR_MEM;
+	} else
+	{
+		*((char **) opt->var) = NULL;
+		opt->flags &= ~GLO_VAR_MEM;
+	}
+}
+
+void getlopt_set_char(topt *opts, char *name, char *value)
+{
+	topt *opt = findopt(1, name, opts);
+	if(!opt)
+		return;
+	setcharoption(opt, value);
+}
+
+static int performoption (int argc, char *argv[], topt *opt, topt *opts)
 {
 	int result = GLO_CONTINUE;
 	/* this really is not supposed to happen, so the exit may be justified to create asap ficing pressure */
@@ -50,7 +78,7 @@ static int performoption (int argc, char *argv[], topt *opt)
 			if (opt->flags & GLO_CHAR) /* var is *char */
 			{
 				debug1("char at %p", opt->var);
-				*((char *) opt->var) = (char) opt->value;\
+				*((char *) opt->var) = (char) opt->value;
 			}
 			else if(opt->flags & GLO_LONG)
 			{
@@ -78,15 +106,29 @@ static int performoption (int argc, char *argv[], topt *opt)
 			return (GLO_NOARG);
 		loptarg = argv[loptind++]+loptchr;
 		loptchr = 0;
+		errno = 0;
 		if (opt->var) {
+			char *endptr = NULL;
 			if (opt->flags & GLO_CHAR) /* var is *char */
-				*((char **) opt->var) = compat_strdup(loptarg); /* valgrind claims lost memory here */
-			else if(opt->flags & GLO_LONG)
-				*((long *) opt->var) = atol(loptarg);
-			else if(opt->flags & GLO_INT)
-				*((int *) opt->var) = atoi(loptarg);
+				setcharoption(opt, loptarg);
+			else if(opt->flags & (GLO_LONG | GLO_INT))
+			{
+				long val = strtol(loptarg, &endptr, 10);
+				if(errno || endptr == loptarg || (endptr && *endptr))
+					return GLO_BADARG;
+				if(opt->flags & GLO_LONG)
+					*((long *) opt->var) = val;
+				else if(val <= INT_MAX && val >= INT_MIN)
+					*((int *) opt->var) = val;
+				else
+					return GLO_BADARG;
+			}
 			else if(opt->flags & GLO_DOUBLE)
-				*((double *) opt->var) = atof(loptarg);
+			{
+				*((double *) opt->var) = strtod(loptarg, &endptr);
+				if(errno || endptr == loptarg || (endptr && *endptr))
+					return GLO_BADARG;
+			}
 			else prog_error();
 		}
 #if 0 /* Oliver: What was this for?! --ThOr */
@@ -95,7 +137,7 @@ static int performoption (int argc, char *argv[], topt *opt)
 #endif
 	}
 	if (opt->func)
-		opt->func(loptarg);
+		opt->func(loptarg, opts);
 	debug4("result: %i (%p, %li, %i)", result, opt->var, opt->value, opt->sname);
 	return (result);
 }
@@ -120,7 +162,7 @@ int getsingleopt (int argc, char *argv[], topt *opts)
 				if (!(opt = findopt(1, thisopt+2, opts)))
 					return (GLO_UNKNOWN);
 				else
-					return (performoption(argc, argv, opt));
+					return (performoption(argc, argv, opt, opts));
 			}
 			else { /* "--" == end of options */
 				loptind++;
@@ -140,7 +182,7 @@ int getsingleopt (int argc, char *argv[], topt *opts)
 	if (!opt)
 		return (GLO_UNKNOWN);
 	else
-		return (performoption(argc, argv, opt));
+		return (performoption(argc, argv, opt, opts));
 }
 
 int getlopt (int argc, char *argv[], topt *opts)

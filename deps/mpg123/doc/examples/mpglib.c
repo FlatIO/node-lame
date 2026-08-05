@@ -1,9 +1,8 @@
 /*
 	mpglib: test program for libmpg123, in the style of the legacy mpglib test program
 
-	copyright 2007 by the mpg123 project - free software under the terms of the LGPL 2.1
-	see COPYING and AUTHORS files in distribution or http://mpg123.org
-	initially written by Thomas Orgis
+	This is example code only sensible to be considered in the public domain.
+	Initially written by Thomas Orgis.
 */
 
 #include <mpg123.h>
@@ -22,9 +21,10 @@
 
 #include <stdio.h>
 
-#define INBUFF  16384
-#define OUTBUFF 32768 
+#define INBUFF  16384 /**< input buffer size */
+#define OUTBUFF 32768 /**< output buffer size */
 
+/** The whole operation. */
 int main(int argc, char **argv)
 {
 	size_t size;
@@ -40,7 +40,11 @@ _setmode(_fileno(stdin),_O_BINARY);
 _setmode(_fileno(stdout),_O_BINARY);
 #endif
 
+#if MPG123_API_VERSION < 46
+	// Newer versions of the library don't need that anymore, but it is safe
+	// to have the no-op call present for compatibility with old versions.
 	mpg123_init();
+#endif
 	m = mpg123_new(argc > 1 ? argv[1] : NULL, &ret);
 	if(m == NULL)
 	{
@@ -73,12 +77,14 @@ _setmode(_fileno(stdout),_O_BINARY);
 			mpg123_getformat(m, &rate, &channels, &enc);
 			fprintf(stderr, "New format: %li Hz, %i channels, encoding value %i\n", rate, channels, enc);
 		}
-		write(1,out,size);
+		if(write(1,out,size) != size)
+			fprintf(stderr, "Output truncated.\n");
 		outc += size;
 		while(ret != MPG123_ERR && ret != MPG123_NEED_MORE)
 		{ /* Get all decoded audio that is available now before feeding more input. */
 			ret = mpg123_decode(m,NULL,0,out,OUTBUFF,&size);
-			write(1,out,size);
+			if(write(1,out,size) != size)
+				fprintf(stderr, "Output truncated.\n");
 			outc += size;
 		}
 		if(ret == MPG123_ERR){ fprintf(stderr, "some error: %s", mpg123_strerror(m)); break; }
@@ -87,6 +93,5 @@ _setmode(_fileno(stdout),_O_BINARY);
 
 	/* Done decoding, now just clean up and leave. */
 	mpg123_delete(m);
-	mpg123_exit();
 	return 0;
 }

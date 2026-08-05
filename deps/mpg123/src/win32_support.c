@@ -1,6 +1,6 @@
 #include "config.h"
 #include "mpg123app.h"
-#include "debug.h"
+#include "common/debug.h"
 
 #ifdef WANT_WIN32_UNICODE
 
@@ -22,6 +22,7 @@ void __cdecl __declspec(dllimport) __wgetmainargs (
 int win32_cmdline_utf8(int * argc, char *** argv)
 {
 	int argcounter;
+	int nargc;
 	wchar_t **argv_wide;
 	wchar_t **env;
 	char *argvptr;
@@ -31,13 +32,25 @@ int win32_cmdline_utf8(int * argc, char *** argv)
 	if(argv == NULL || argc == NULL) return -1;
 
 	startup.newmode = 0;
-	__wgetmainargs(argc, &argv_wide,&env,1, &startup);
+	nargc = -1;
+	argv_wide = NULL;
+	env = NULL;
+	__wgetmainargs(&nargc, &argv_wide,&env,1, &startup);
+	if (nargc == -1 || argv_wide == NULL || env == NULL) {
+		error("Cannot allocate memory for wide command line.");
+		return -1;
+	}
+	*argc = nargc;
 	*argv = (char **)calloc(sizeof (char *), *argc);
-	if(*argv == NULL){ error("Cannot allocate memory for command line."); return -1; }
+	if(*argv == NULL)
+	{
+		error("Cannot allocate memory for UTF-8 command line.");
+		return -1;
+	}
 
 	for(argcounter = 0; argcounter < *argc; argcounter++)
 	{
-		win32_wide_utf8(argv_wide[argcounter], &argvptr, NULL);
+		INT123_win32_wide_utf8(argv_wide[argcounter], &argvptr, NULL);
 		(*argv)[argcounter] = argvptr;
 	}
 	return 0;
@@ -93,7 +106,7 @@ VOID CALLBACK ReadComplete(
 	return;
 }
 
-ssize_t win32_fifo_read(void *buf, size_t nbyte)
+mpg123_ssize_t win32_fifo_read(void *buf, size_t nbyte)
 {
 	int check;
 	DWORD readbuff;
@@ -166,7 +179,7 @@ int win32_fifo_mkfifo(const char *path)
 	win32_fifo_close();
 #ifdef WANT_WIN32_UNICODE
 	wchar_t *str;
-	if(win32_utf8_wide(path,&str,NULL) == 0)
+	if(INT123_win32_utf8_wide(path,&str,NULL) == 0)
 	{
 		fprintf(stderr,"Cannot get FIFO name, likely out of memory\n");
 		return -1;

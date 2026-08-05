@@ -1,11 +1,12 @@
 /*
 	synth_stereo_x86_64_s32: SSE optimized synth for x86-64 (stereo specific, s32 output version)
 
-	copyright 1995-2009 by the mpg123 project - free software under the terms of the LGPL 2.1
+	copyright 1995-2026 by the mpg123 project - free software under the terms of the LGPL 2.1
 	see COPYING and AUTHORS files in distribution or http://mpg123.org
 	initially written by Taihei Monma
 */
 
+#include "x86_64_defs.h"
 #include "mangle.h"
 
 #ifdef IS_MSABI
@@ -38,19 +39,15 @@
 	return value: number of clipped samples
 */
 
-#ifndef __APPLE__
-	.section	.rodata
-#else
-	.data
-#endif
+	RODATA
 	ALIGN32
-ASM_NAME(scale_s32):
+ASM_NAME(INT123_scale_s32):
 	.long   1199570944
 	.long   1199570944
 	.long   1199570944
 	.long   1199570944
 	ALIGN16
-ASM_NAME(maxmin_s32):
+ASM_NAME(INT123_maxmin_s32):
 	.long   1191182335
 	.long   1191182335
 	.long   1191182335
@@ -61,8 +58,8 @@ ASM_NAME(maxmin_s32):
 	.long   -956301312
 	.text
 	ALIGN16
-.globl ASM_NAME(synth_1to1_s32_s_x86_64_asm)
-ASM_NAME(synth_1to1_s32_s_x86_64_asm):
+.globl ASM_NAME(INT123_synth_1to1_s32_s_x86_64_asm)
+ASM_NAME(INT123_synth_1to1_s32_s_x86_64_asm):
 #ifdef IS_MSABI /* should save xmm6-15 */
 	movl		40(%rsp), %eax /* 5th argument; placed after 32-byte shadow space */
 	pushq		%rsi
@@ -96,8 +93,8 @@ ASM_NAME(synth_1to1_s32_s_x86_64_asm):
 	leaq		64(WINDOW), WINDOW
 	subq		%rax, WINDOW
 	
-	leaq		ASM_NAME(scale_s32)(%rip), %r9
-	leaq		ASM_NAME(maxmin_s32)(%rip), %r10
+	leaq		ASM_NAME(INT123_scale_s32)(%rip), %r9
+	leaq		ASM_NAME(INT123_maxmin_s32)(%rip), %r10
 	leaq		16(%r10), %r11
 	xorps		%xmm0, %xmm0
 	movaps		%xmm0, TEMP_CLIP
@@ -452,16 +449,16 @@ ASM_NAME(synth_1to1_s32_s_x86_64_asm):
 	andl		$0xffff, %eax
 	
 #ifdef IS_MSABI
-	movaps		(%rsp), %xmm6
-	movaps		16(%rsp), %xmm7
-	movaps		32(%rsp), %xmm8
-	movaps		48(%rsp), %xmm9
-	movaps		64(%rsp), %xmm10
-	movaps		80(%rsp), %xmm11
-	movaps		96(%rsp), %xmm12
-	movaps		112(%rsp), %xmm13
-	movaps		128(%rsp), %xmm14
-	movaps		144(%rsp), %xmm15
+	movaps		16(%rsp), %xmm6
+	movaps		32(%rsp), %xmm7
+	movaps		48(%rsp), %xmm8
+	movaps		64(%rsp), %xmm9
+	movaps		80(%rsp), %xmm10
+	movaps		96(%rsp), %xmm11
+	movaps		112(%rsp), %xmm12
+	movaps		128(%rsp), %xmm13
+	movaps		144(%rsp), %xmm14
+	movaps		160(%rsp), %xmm15
 	addq		$184, %rsp
 	popq		%rdi
 	popq		%rsi

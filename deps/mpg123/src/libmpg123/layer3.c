@@ -1,7 +1,7 @@
 /*
 	layer3.c: the layer 3 decoder
 
-	copyright 1995-2017 by the mpg123 project - free software under the terms of the LGPL 2.1
+	copyright 1995-2021 by the mpg123 project - free software under the terms of the LGPL 2.1
 	see COPYING and AUTHORS files in distribution or http://mpg123.org
 	initially written by Michael Hipp
 
@@ -21,37 +21,31 @@
 #include "huffman.h"
 #endif
 #include "getbits.h"
-#include "debug.h"
+#include "../common/debug.h"
 
 
+/* Predeclare the assembly routines, only called from wrappers here. */
+void INT123_dct36_3dnow   (real *,real *,real *,const real *,real *);
+void INT123_dct36_3dnowext(real *,real *,real *,const real *,real *);
+void INT123_dct36_x86_64  (real *,real *,real *,const real *,real *);
+void INT123_dct36_sse     (real *,real *,real *,const real *,real *);
+void INT123_dct36_avx     (real *,real *,real *,const real *,real *);
+void INT123_dct36_neon    (real *,real *,real *,const real *,real *);
+void INT123_dct36_neon64  (real *,real *,real *,const real *,real *);
 
 /* define CUT_SFB21 if you want to cut-off the frequency above 16kHz */
 #if 0
 #define CUT_SFB21
 #endif
 
-#ifdef REAL_IS_FIXED
-#define NEW_DCT9
-#include "l3_integer_tables.h"
-#else
-/* static one-time calculated tables... or so */
-static real ispow[8207];
-static real aa_ca[8],aa_cs[8];
-static ALIGNED(16) real win[4][36];
-static ALIGNED(16) real win1[4][36];
-real COS9[9]; /* dct36_3dnow wants to use that */
-static real COS6_1,COS6_2;
-real tfcos36[9]; /* dct36_3dnow wants to use that */
-static real tfcos12[3];
-#define NEW_DCT9
-#ifdef NEW_DCT9
-static real cos9[3],cos18[3];
-static real tan1_1[16],tan2_1[16],tan1_2[16],tan2_2[16];
-static real pow1_1[2][32],pow2_1[2][32],pow1_2[2][32],pow2_2[2][32];
-#endif
+#include "l3tabs.h"
+#include "l3bandgain.h"
+
+#ifdef RUNTIME_TABLES
+#include "init_layer3.h"
 #endif
 
-/* Decoder state data, living on the stack of do_layer3. */
+/* Decoder state data, living on the stack of INT123_do_layer3. */
 
 struct gr_info_s
 {
@@ -71,8 +65,13 @@ struct gr_info_s
 	unsigned preflag;
 	unsigned scalefac_scale;
 	unsigned count1table_select;
+#ifdef REAL_IS_FIXED
+	const real *full_gain[3];
+	const real *pow2gain;
+#else
 	real *full_gain[3];
 	real *pow2gain;
+#endif
 };
 
 struct III_sideinfo
@@ -83,301 +82,29 @@ struct III_sideinfo
 	struct { struct gr_info_s gr[2]; } ch[2];
 };
 
-struct bandInfoStruct
-{
-	unsigned short longIdx[23];
-	unsigned char longDiff[22];
-	unsigned short shortIdx[14];
-	unsigned char shortDiff[13];
-};
-
-/* Techy details about our friendly MPEG data. Fairly constant over the years;-) */
-static const struct bandInfoStruct bandInfo[9] =
-{
-	{ /* MPEG 1.0 */
-		{0,4,8,12,16,20,24,30,36,44,52,62,74, 90,110,134,162,196,238,288,342,418,576},
-		{4,4,4,4,4,4,6,6,8, 8,10,12,16,20,24,28,34,42,50,54, 76,158},
-		{0,4*3,8*3,12*3,16*3,22*3,30*3,40*3,52*3,66*3, 84*3,106*3,136*3,192*3},
-		{4,4,4,4,6,8,10,12,14,18,22,30,56}
-	},
-	{
-		{0,4,8,12,16,20,24,30,36,42,50,60,72, 88,106,128,156,190,230,276,330,384,576},
-		{4,4,4,4,4,4,6,6,6, 8,10,12,16,18,22,28,34,40,46,54, 54,192},
-		{0,4*3,8*3,12*3,16*3,22*3,28*3,38*3,50*3,64*3, 80*3,100*3,126*3,192*3},
-		{4,4,4,4,6,6,10,12,14,16,20,26,66}
-	},
-	{
-		{0,4,8,12,16,20,24,30,36,44,54,66,82,102,126,156,194,240,296,364,448,550,576},
-		{4,4,4,4,4,4,6,6,8,10,12,16,20,24,30,38,46,56,68,84,102, 26},
-		{0,4*3,8*3,12*3,16*3,22*3,30*3,42*3,58*3,78*3,104*3,138*3,180*3,192*3},
-		{4,4,4,4,6,8,12,16,20,26,34,42,12}
-	},
-	{ /* MPEG 2.0 */
-		{0,6,12,18,24,30,36,44,54,66,80,96,116,140,168,200,238,284,336,396,464,522,576},
-		{6,6,6,6,6,6,8,10,12,14,16,20,24,28,32,38,46,52,60,68,58,54 } ,
-		{0,4*3,8*3,12*3,18*3,24*3,32*3,42*3,56*3,74*3,100*3,132*3,174*3,192*3} ,
-		{4,4,4,6,6,8,10,14,18,26,32,42,18 }
-	},
-	{ /* Twiddling 3 values here (not just 330->332!) fixed bug 1895025. */
-		{0,6,12,18,24,30,36,44,54,66,80,96,114,136,162,194,232,278,332,394,464,540,576},
-		{6,6,6,6,6,6,8,10,12,14,16,18,22,26,32,38,46,54,62,70,76,36 },
-		{0,4*3,8*3,12*3,18*3,26*3,36*3,48*3,62*3,80*3,104*3,136*3,180*3,192*3},
-		{4,4,4,6,8,10,12,14,18,24,32,44,12 }
-	},
-	{
-		{0,6,12,18,24,30,36,44,54,66,80,96,116,140,168,200,238,284,336,396,464,522,576},
-		{6,6,6,6,6,6,8,10,12,14,16,20,24,28,32,38,46,52,60,68,58,54 },
-		{0,4*3,8*3,12*3,18*3,26*3,36*3,48*3,62*3,80*3,104*3,134*3,174*3,192*3},
-		{4,4,4,6,8,10,12,14,18,24,30,40,18 }
-	},
-	{ /* MPEG 2.5 */
-		{0,6,12,18,24,30,36,44,54,66,80,96,116,140,168,200,238,284,336,396,464,522,576},
-		{6,6,6,6,6,6,8,10,12,14,16,20,24,28,32,38,46,52,60,68,58,54},
-		{0,12,24,36,54,78,108,144,186,240,312,402,522,576},
-		{4,4,4,6,8,10,12,14,18,24,30,40,18}
-	},
-	{
-		{0,6,12,18,24,30,36,44,54,66,80,96,116,140,168,200,238,284,336,396,464,522,576},
-		{6,6,6,6,6,6,8,10,12,14,16,20,24,28,32,38,46,52,60,68,58,54},
-		{0,12,24,36,54,78,108,144,186,240,312,402,522,576},
-		{4,4,4,6,8,10,12,14,18,24,30,40,18}
-	},
-	{
-		{0,12,24,36,48,60,72,88,108,132,160,192,232,280,336,400,476,566,568,570,572,574,576},
-		{12,12,12,12,12,12,16,20,24,28,32,40,48,56,64,76,90,2,2,2,2,2},
-		{0, 24, 48, 72,108,156,216,288,372,480,486,492,498,576},
-		{8,8,8,12,16,20,24,28,36,2,2,2,26}
-	}
-};
-
-static int mapbuf0[9][152];
-static int mapbuf1[9][156];
-static int mapbuf2[9][44];
-static int *map[9][3];
-static int *mapend[9][3];
-
-static unsigned int n_slen2[512]; /* MPEG 2.0 slen for 'normal' mode */
-static unsigned int i_slen2[256]; /* MPEG 2.0 slen for intensity stereo */
-
-/* Some helpers used in init_layer3 */
-
 #ifdef OPT_MMXORSSE
-real init_layer3_gainpow2_mmx(mpg123_handle *fr, int i)
+real INT123_init_layer3_gainpow2_mmx(mpg123_handle *fr, int i)
 {
 	if(!fr->p.down_sample) return DOUBLE_TO_REAL(16384.0 * pow((double)2.0,-0.25 * (double) (i+210) ));
 	else return DOUBLE_TO_REAL(pow((double)2.0,-0.25 * (double) (i+210)));
 }
 #endif
 
-real init_layer3_gainpow2(mpg123_handle *fr, int i)
+real INT123_init_layer3_gainpow2(mpg123_handle *fr, int i)
 {
-#if defined(REAL_IS_FIXED) && defined(PRECALC_TABLES)
-	return gainpow2[i+256];
-#else
 	return DOUBLE_TO_REAL_SCALE_LAYER3(pow((double)2.0,-0.25 * (double) (i+210)),i+256);
-#endif
 }
 
-
-/* init tables for layer-3 ... specific with the downsampling... */
-void init_layer3(void)
-{
-	int i,j,k,l;
-
-#if !defined(REAL_IS_FIXED) || !defined(PRECALC_TABLES)
-	for(i=0;i<8207;i++)
-	ispow[i] = DOUBLE_TO_REAL_POW43(pow((double)i,(double)4.0/3.0));
-
-	for(i=0;i<8;i++)
-	{
-		const double Ci[8] = {-0.6,-0.535,-0.33,-0.185,-0.095,-0.041,-0.0142,-0.0037};
-		double sq = sqrt(1.0+Ci[i]*Ci[i]);
-		aa_cs[i] = DOUBLE_TO_REAL(1.0/sq);
-		aa_ca[i] = DOUBLE_TO_REAL(Ci[i]/sq);
-	}
-
-	for(i=0;i<18;i++)
-	{
-		win[0][i]    = win[1][i]    =
-			DOUBLE_TO_REAL( 0.5*sin(M_PI/72.0 * (double)(2*(i+0) +1)) / cos(M_PI * (double)(2*(i+0) +19) / 72.0) );
-		win[0][i+18] = win[3][i+18] =
-			DOUBLE_TO_REAL( 0.5*sin(M_PI/72.0 * (double)(2*(i+18)+1)) / cos(M_PI * (double)(2*(i+18)+19) / 72.0) );
-	}
-	for(i=0;i<6;i++)
-	{
-		win[1][i+18] = DOUBLE_TO_REAL(0.5 / cos ( M_PI * (double) (2*(i+18)+19) / 72.0 ));
-		win[3][i+12] = DOUBLE_TO_REAL(0.5 / cos ( M_PI * (double) (2*(i+12)+19) / 72.0 ));
-		win[1][i+24] = DOUBLE_TO_REAL(0.5 * sin( M_PI / 24.0 * (double) (2*i+13) ) / cos ( M_PI * (double) (2*(i+24)+19) / 72.0 ));
-		win[1][i+30] = win[3][i] = DOUBLE_TO_REAL(0.0);
-		win[3][i+6 ] = DOUBLE_TO_REAL(0.5 * sin( M_PI / 24.0 * (double) (2*i+1 ) ) / cos ( M_PI * (double) (2*(i+6 )+19) / 72.0 ));
-	}
-
-	for(i=0;i<9;i++)
-	COS9[i] = DOUBLE_TO_REAL(cos( M_PI / 18.0 * (double) i));
-
-	for(i=0;i<9;i++)
-	tfcos36[i] = DOUBLE_TO_REAL(0.5 / cos ( M_PI * (double) (i*2+1) / 36.0 ));
-
-	for(i=0;i<3;i++)
-	tfcos12[i] = DOUBLE_TO_REAL(0.5 / cos ( M_PI * (double) (i*2+1) / 12.0 ));
-
-	COS6_1 = DOUBLE_TO_REAL(cos( M_PI / 6.0 * (double) 1));
-	COS6_2 = DOUBLE_TO_REAL(cos( M_PI / 6.0 * (double) 2));
-
-#ifdef NEW_DCT9
-	cos9[0]  = DOUBLE_TO_REAL(cos(1.0*M_PI/9.0));
-	cos9[1]  = DOUBLE_TO_REAL(cos(5.0*M_PI/9.0));
-	cos9[2]  = DOUBLE_TO_REAL(cos(7.0*M_PI/9.0));
-	cos18[0] = DOUBLE_TO_REAL(cos(1.0*M_PI/18.0));
-	cos18[1] = DOUBLE_TO_REAL(cos(11.0*M_PI/18.0));
-	cos18[2] = DOUBLE_TO_REAL(cos(13.0*M_PI/18.0));
-#endif
-
-	for(i=0;i<12;i++)
-	{
-		win[2][i] = DOUBLE_TO_REAL(0.5 * sin( M_PI / 24.0 * (double) (2*i+1) ) / cos ( M_PI * (double) (2*i+7) / 24.0 ));
-	}
-
-	for(i=0;i<16;i++)
-	{
-		double t = tan( (double) i * M_PI / 12.0 );
-		tan1_1[i] = DOUBLE_TO_REAL_15(t / (1.0+t));
-		tan2_1[i] = DOUBLE_TO_REAL_15(1.0 / (1.0 + t));
-		tan1_2[i] = DOUBLE_TO_REAL_15(M_SQRT2 * t / (1.0+t));
-		tan2_2[i] = DOUBLE_TO_REAL_15(M_SQRT2 / (1.0 + t));
-	}
-
-	for(i=0;i<32;i++)
-	{
-		for(j=0;j<2;j++)
-		{
-			double base = pow(2.0,-0.25*(j+1.0));
-			double p1=1.0,p2=1.0;
-			if(i > 0)
-			{
-				if( i & 1 ) p1 = pow(base,(i+1.0)*0.5);
-				else p2 = pow(base,i*0.5);
-			}
-			pow1_1[j][i] = DOUBLE_TO_REAL_15(p1);
-			pow2_1[j][i] = DOUBLE_TO_REAL_15(p2);
-			pow1_2[j][i] = DOUBLE_TO_REAL_15(M_SQRT2 * p1);
-			pow2_2[j][i] = DOUBLE_TO_REAL_15(M_SQRT2 * p2);
-		}
-	}
-#endif
-
-	for(j=0;j<4;j++)
-	{
-		const int len[4] = { 36,36,12,36 };
-		for(i=0;i<len[j];i+=2) win1[j][i] = + win[j][i];
-
-		for(i=1;i<len[j];i+=2) win1[j][i] = - win[j][i];
-	}
-
-	for(j=0;j<9;j++)
-	{
-		const struct bandInfoStruct *bi = &bandInfo[j];
-		int *mp;
-		int cb,lwin;
-		const unsigned char *bdf;
-		int switch_idx;
-
-		mp = map[j][0] = mapbuf0[j];
-		bdf = bi->longDiff;
-		switch_idx = (j < 3) ? 8 : 6;
-		for(i=0,cb = 0; cb < switch_idx ; cb++,i+=*bdf++)
-		{
-			*mp++ = (*bdf) >> 1;
-			*mp++ = i;
-			*mp++ = 3;
-			*mp++ = cb;
-		}
-		bdf = bi->shortDiff+3;
-		for(cb=3;cb<13;cb++)
-		{
-			int l = (*bdf++) >> 1;
-			for(lwin=0;lwin<3;lwin++)
-			{
-				*mp++ = l;
-				*mp++ = i + lwin;
-				*mp++ = lwin;
-				*mp++ = cb;
-			}
-			i += 6*l;
-		}
-		mapend[j][0] = mp;
-
-		mp = map[j][1] = mapbuf1[j];
-		bdf = bi->shortDiff+0;
-		for(i=0,cb=0;cb<13;cb++)
-		{
-			int l = (*bdf++) >> 1;
-			for(lwin=0;lwin<3;lwin++)
-			{
-				*mp++ = l;
-				*mp++ = i + lwin;
-				*mp++ = lwin;
-				*mp++ = cb;
-			}
-			i += 6*l;
-		}
-		mapend[j][1] = mp;
-
-		mp = map[j][2] = mapbuf2[j];
-		bdf = bi->longDiff;
-		for(cb = 0; cb < 22 ; cb++)
-		{
-			*mp++ = (*bdf++) >> 1;
-			*mp++ = cb;
-		}
-		mapend[j][2] = mp;
-	}
-
-	/* Now for some serious loopings! */
-	for(i=0;i<5;i++)
-	for(j=0;j<6;j++)
-	for(k=0;k<6;k++)
-	{
-		int n = k + j * 6 + i * 36;
-		i_slen2[n] = i|(j<<3)|(k<<6)|(3<<12);
-	}
-	for(i=0;i<4;i++)
-	for(j=0;j<4;j++)
-	for(k=0;k<4;k++)
-	{
-		int n = k + j * 4 + i * 16;
-		i_slen2[n+180] = i|(j<<3)|(k<<6)|(4<<12);
-	}
-	for(i=0;i<4;i++)
-	for(j=0;j<3;j++)
-	{
-		int n = j + i * 3;
-		i_slen2[n+244] = i|(j<<3) | (5<<12);
-		n_slen2[n+500] = i|(j<<3) | (2<<12) | (1<<15);
-	}
-	for(i=0;i<5;i++)
-	for(j=0;j<5;j++)
-	for(k=0;k<4;k++)
-	for(l=0;l<4;l++)
-	{
-		int n = l + k * 4 + j * 16 + i * 80;
-		n_slen2[n] = i|(j<<3)|(k<<6)|(l<<9)|(0<<12);
-	}
-	for(i=0;i<5;i++)
-	for(j=0;j<5;j++)
-	for(k=0;k<4;k++)
-	{
-		int n = k + j * 4 + i * 20;
-		n_slen2[n+400] = i|(j<<3)|(k<<6)|(1<<12);
-	}
-}
-
-
-void init_layer3_stuff(mpg123_handle *fr, real (*gainpow2)(mpg123_handle *fr, int i))
+void INT123_init_layer3_stuff(mpg123_handle *fr, real (*gainpow2_func)(mpg123_handle *fr, int i))
 {
 	int i,j;
 
-	for(i=-256;i<118+4;i++)	fr->gainpow2[i+256] = gainpow2(fr,i);
+#ifdef REAL_IS_FIXED
+	fr->gainpow2 = gainpow2;
+#else
+	for(i=-256;i<118+4;i++)
+		fr->gainpow2[i+256] = gainpow2_func(fr,i);
+#endif
 
 	for(j=0;j<9;j++)
 	{
@@ -408,7 +135,24 @@ static int III_get_side_info(mpg123_handle *fr, struct III_sideinfo *si,int ster
 	int powdiff = (single == SINGLE_MIX) ? 4 : 0;
 
 	const int tabs[2][5] = { { 2,9,5,3,4 } , { 1,8,1,2,9 } };
-	const int *tab = tabs[fr->lsf];
+	const int *tab = tabs[fr->hdr.lsf];
+
+	{ /* First ensure we got enough bits available. */
+		unsigned int needbits = 0;
+		needbits += tab[1]; /* main_data_begin */
+		needbits += stereo == 1 ? tab[2] : tab[3]; /* private */
+		if(!fr->hdr.lsf)
+			needbits += stereo*4; /* scfsi */
+		/* For each granule for each channel ... */
+		needbits += tab[0]*stereo*(29+tab[4]+1+22+(!fr->hdr.lsf?1:0)+2);
+		if(fr->bits_avail < needbits) \
+		{
+			if(NOQUIET)
+				error2( "%u bits for side info needed, only %li available"
+				,	needbits, fr->bits_avail );
+			return 1;
+		}
+	}
 
 	si->main_data_begin = getbits(fr, tab[1]);
 
@@ -418,7 +162,7 @@ static int III_get_side_info(mpg123_handle *fr, struct III_sideinfo *si,int ster
 
 		/*  overwrite main_data_begin for the really available bit reservoir */
 		backbits(fr, tab[1]);
-		if(fr->lsf == 0)
+		if(fr->hdr.lsf == 0)
 		{
 			fr->wordpointer[0] = (unsigned char) (fr->bitreservoir >> 1);
 			fr->wordpointer[1] = (unsigned char) ((fr->bitreservoir & 1) << 7);
@@ -427,37 +171,38 @@ static int III_get_side_info(mpg123_handle *fr, struct III_sideinfo *si,int ster
 
 		/* zero "side-info" data for a silence-frame
 		without touching audio data used as bit reservoir for following frame */
-		memset(fr->wordpointer+2, 0, fr->ssize-2);
+		memset(fr->wordpointer+2, 0, fr->hdr.ssize-2);
 
 		/* reread the new bit reservoir offset */
 		si->main_data_begin = getbits(fr, tab[1]);
 	}
 
 	/* Keep track of the available data bytes for the bit reservoir.
-	Think: Substract the 2 crc bytes in parser already? */
-	fr->bitreservoir = fr->bitreservoir + fr->framesize - fr->ssize - (fr->error_protection ? 2 : 0);
+	   CRC is included in ssize already. */
+	fr->bitreservoir = fr->bitreservoir + fr->hdr.framesize - fr->hdr.ssize;
+
 	/* Limit the reservoir to the max for MPEG 1.0 or 2.x . */
-	if(fr->bitreservoir > (unsigned int) (fr->lsf == 0 ? 511 : 255))
-	fr->bitreservoir = (fr->lsf == 0 ? 511 : 255);
+	if(fr->bitreservoir > (unsigned int) (fr->hdr.lsf == 0 ? 511 : 255))
+	fr->bitreservoir = (fr->hdr.lsf == 0 ? 511 : 255);
 
 	/* Now back into less commented territory. It's code. It works. */
 
 	if (stereo == 1)
-	si->private_bits = getbits_fast(fr, tab[2]);
+	si->private_bits = getbits(fr, tab[2]);
 	else 
-	si->private_bits = getbits_fast(fr, tab[3]);
+	si->private_bits = getbits(fr, tab[3]);
 
-	if(!fr->lsf) for(ch=0; ch<stereo; ch++)
+	if(!fr->hdr.lsf) for(ch=0; ch<stereo; ch++)
 	{
 		si->ch[ch].gr[0].scfsi = -1;
-		si->ch[ch].gr[1].scfsi = getbits_fast(fr, 4);
+		si->ch[ch].gr[1].scfsi = getbits(fr, 4);
 	}
 
 	for (gr=0; gr<tab[0]; gr++)
 	for (ch=0; ch<stereo; ch++)
 	{
 		register struct gr_info_s *gr_info = &(si->ch[ch].gr[gr]);
-
+		unsigned int qss;
 		gr_info->part2_3_length = getbits(fr, 12);
 		gr_info->big_values = getbits(fr, 9);
 		if(gr_info->big_values > 288)
@@ -465,18 +210,25 @@ static int III_get_side_info(mpg123_handle *fr, struct III_sideinfo *si,int ster
 			if(NOQUIET) error("big_values too large!");
 			gr_info->big_values = 288;
 		}
-		gr_info->pow2gain = fr->gainpow2+256 - getbits_fast(fr, 8) + powdiff;
-		if(ms_stereo) gr_info->pow2gain += 2;
+		qss = getbits_fast(fr, 8);
+		gr_info->pow2gain = fr->gainpow2+256 - qss + powdiff;
+		if(ms_stereo)
+			gr_info->pow2gain += 2;
+#ifndef NO_MOREINFO
+		if(fr->pinfo)
+			fr->pinfo->qss[gr][ch] = qss;
+#endif
 		gr_info->scalefac_compress = getbits(fr, tab[4]);
 		if(gr_info->part2_3_length == 0)
 		{
-			if(gr_info->scalefac_compress > 0)
-				debug1( "scalefac_compress _should_ be zero instead of %i"
+			if(gr_info->scalefac_compress > 0 && VERBOSE2)
+				error1( "scalefac_compress should be zero instead of %i"
 				,	gr_info->scalefac_compress );
 			gr_info->scalefac_compress = 0;
 		}
 
-		if(get1bit(fr))
+		/* 22 bits for if/else block */
+		if(getbits(fr,1))
 		{ /* window switch flag  */
 			int i;
 			gr_info->block_type       = getbits_fast(fr, 2);
@@ -489,7 +241,14 @@ static int III_get_side_info(mpg123_handle *fr, struct III_sideinfo *si,int ster
 			*/
 			gr_info->table_select[2] = 0;
 			for(i=0;i<3;i++)
-			gr_info->full_gain[i] = gr_info->pow2gain + (getbits_fast(fr, 3)<<3);
+			{
+				unsigned int sbg = (getbits_fast(fr, 3)<<3);
+				gr_info->full_gain[i] = gr_info->pow2gain + sbg;
+#ifndef NO_MOREINFO
+				if(fr->pinfo)
+					fr->pinfo->sub_gain[gr][ch][i] = sbg / 8;
+#endif
+			}
 
 			if(gr_info->block_type == 0)
 			{
@@ -498,14 +257,14 @@ static int III_get_side_info(mpg123_handle *fr, struct III_sideinfo *si,int ster
 			}
 
 			/* region_count/start parameters are implicit in this case. */       
-			if( (!fr->lsf || (gr_info->block_type == 2)) && !fr->mpeg25)
+			if( (!fr->hdr.lsf || (gr_info->block_type == 2)) && !fr->hdr.mpeg25)
 			{
 				gr_info->region1start = 36>>1;
 				gr_info->region2start = 576>>1;
 			}
 			else
 			{
-				if(fr->mpeg25)
+				if(fr->hdr.mpeg25)
 				{ 
 					int r0c,r1c;
 					if((gr_info->block_type == 2) && (!gr_info->mixed_block_flag) ) r0c = 5;
@@ -540,7 +299,7 @@ static int III_get_side_info(mpg123_handle *fr, struct III_sideinfo *si,int ster
 			gr_info->block_type = 0;
 			gr_info->mixed_block_flag = 0;
 		}
-		if(!fr->lsf) gr_info->preflag = get1bit(fr);
+		if(!fr->hdr.lsf) gr_info->preflag = get1bit(fr);
 
 		gr_info->scalefac_scale = get1bit(fr);
 		gr_info->count1table_select = get1bit(fr);
@@ -561,18 +320,13 @@ static int III_get_scale_factors_1(mpg123_handle *fr, int *scf,struct gr_info_s 
 	int num0 = slen[0][gr_info->scalefac_compress];
 	int num1 = slen[1][gr_info->scalefac_compress];
 
-	if(gr_info->part2_3_length == 0)
-	{
-		int i;
-		for(i=0;i<39;i++)
-			*scf++ = 0;
-		return 0;
-	}
-
 	if(gr_info->block_type == 2)
 	{
 		int i=18;
-		numbits = (num0 + num1) * 18;
+		numbits = (num0 + num1) * 18 /* num0 * (17+1?) + num1 * 18 */
+		        - (gr_info->mixed_block_flag ? num0 : 0);
+		if(fr->bits_avail < numbits)
+			return -1;
 
 		if(gr_info->mixed_block_flag)
 		{
@@ -580,7 +334,6 @@ static int III_get_scale_factors_1(mpg123_handle *fr, int *scf,struct gr_info_s 
 			*scf++ = getbits_fast(fr, num0);
 
 			i = 9;
-			numbits -= num0; /* num0 * 17 + num1 * 18 */
 		}
 
 		for(;i;i--) *scf++ = getbits_fast(fr, num0);
@@ -596,51 +349,53 @@ static int III_get_scale_factors_1(mpg123_handle *fr, int *scf,struct gr_info_s 
 
 		if(scfsi < 0)
 		{ /* scfsi < 0 => granule == 0 */
+			numbits = (num0 + num1) * 10 + num0;
+			if(fr->bits_avail < numbits)
+				return -1;
+
 			for(i=11;i;i--) *scf++ = getbits_fast(fr, num0);
 
 			for(i=10;i;i--) *scf++ = getbits_fast(fr, num1);
 
-			numbits = (num0 + num1) * 10 + num0;
 			*scf++ = 0;
 		}
 		else
 		{
-			numbits = 0;
+			numbits = !(scfsi & 0x8) * num0 * 6
+			        + !(scfsi & 0x4) * num0 * 5
+			        + !(scfsi & 0x2) * num1 * 5
+			        + !(scfsi & 0x1) * num1 * 5;
+			if(fr->bits_avail < numbits)
+				return -1;
+
 			if(!(scfsi & 0x8))
 			{
 				for (i=0;i<6;i++) *scf++ = getbits_fast(fr, num0);
-
-				numbits += num0 * 6;
 			}
 			else scf += 6; 
 
 			if(!(scfsi & 0x4))
 			{
 				for (i=0;i<5;i++) *scf++ = getbits_fast(fr, num0);
-
-				numbits += num0 * 5;
 			}
 			else scf += 5;
 
 			if(!(scfsi & 0x2))
 			{
 				for(i=0;i<5;i++) *scf++ = getbits_fast(fr, num1);
-
-				numbits += num1 * 5;
 			}
 			else scf += 5;
 
 			if(!(scfsi & 0x1))
 			{
 				for (i=0;i<5;i++) *scf++ = getbits_fast(fr, num1);
-
-				numbits += num1 * 5;
 			}
 			else scf += 5;
 
 			*scf++ = 0;  /* no l[21] in original sources */
 		}
 	}
+
 	return numbits;
 }
 
@@ -649,7 +404,7 @@ static int III_get_scale_factors_2(mpg123_handle *fr, int *scf,struct gr_info_s 
 {
 	const unsigned char *pnt;
 	int i,j,n=0,numbits=0;
-	unsigned int slen;
+	unsigned int slen, slen2;
 
 	const unsigned char stab[3][6][4] =
 	{
@@ -667,7 +422,7 @@ static int III_get_scale_factors_2(mpg123_handle *fr, int *scf,struct gr_info_s 
 		}
 	}; 
 
-	if(i_stereo) /* i_stereo AND second channel -> do_layer3() checks this */
+	if(i_stereo) /* i_stereo AND second channel -> INT123_do_layer3() checks this */
 	slen = i_slen2[gr_info->scalefac_compress>>1];
 	else
 	slen = n_slen2[gr_info->scalefac_compress];
@@ -683,13 +438,16 @@ static int III_get_scale_factors_2(mpg123_handle *fr, int *scf,struct gr_info_s 
 
 	pnt = stab[n][(slen>>12)&0x7];
 
-	if(gr_info->part2_3_length == 0)
+	slen2 = slen;
+	for(i=0;i<4;i++)
 	{
-		int i;
-		for(i=0;i<39;i++)
-			*scf++ = 0;
-		return 0;
+		int num = slen2 & 0x7;
+		slen2 >>= 3;
+		if(num)
+			numbits += pnt[i] * num;
 	}
+	if(numbits > gr_info->part2_3_length)
+		return -1;
 
 	for(i=0;i<4;i++)
 	{
@@ -698,8 +456,6 @@ static int III_get_scale_factors_2(mpg123_handle *fr, int *scf,struct gr_info_s 
 		if(num)
 		{
 			for(j=0;j<(int)(pnt[i]);j++) *scf++ = getbits_fast(fr, num);
-
-			numbits += pnt[i] * num;
 		}
 		else
 		for(j=0;j<(int)(pnt[i]);j++) *scf++ = 0;
@@ -751,13 +507,28 @@ static unsigned char pretab_choice[2][22] =
 static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],int *scf, struct gr_info_s *gr_info,int sfreq,int part2bits)
 {
 	int shift = 1 + gr_info->scalefac_scale;
-	real *xrpnt = (real *) xr;
+	// Pointer cast to make pedantic compilers happy.
+	real *xrpnt = (real*)xr;
+	// Some compiler freaks out over &xr[SBLIMIT][0], which is the same.
+	real *xrpntlimit = (real*)xr+SBLIMIT*SSLIMIT;
 	int l[3],l3;
 	int part2remain = gr_info->part2_3_length - part2bits;
-	int *me;
+	const short *me;
 #ifdef REAL_IS_FIXED
 	int gainpow2_scale_idx = 378;
 #endif
+
+	// Writes to xr jump around wildly with corrupted files. It is not guaranteed
+	// that all values are correctly written to. Zero all values beforehand
+	// to have a clean slate, instead of trying to do that afterwards.
+	// All branches that zero a value can also be dropped, then.
+	// After some micro optimization here and there, the resulting code seems
+	// to be up to 3 % faster than before with AVX decoder, but this depends a
+	// lot on the target CPU, could give a small hit on some.
+	// This loop here also seems to be a bit faster than calling memset(0).
+	for(int i=0; i<SBLIMIT; ++i)
+		for(int j=0; j<SSLIMIT; ++j)
+			xr[i][j] = DOUBLE_TO_REAL(0.0);
 
 	/* Assumption: If there is some part2_3_length at all, there should be
 	   enough of it to work with properly. In case of zero length we silently
@@ -772,6 +543,8 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 	mask  = ((MASK_UTYPE) getbits(fr, num))<<BITSHIFT;
 	mask <<= 8-num;
 	part2remain -= num;
+
+	/* Bitindex is zero now, we are allowed to use getbyte(). */
 
 	{
 		int bv       = gr_info->big_values;
@@ -802,12 +575,26 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 		}
 	}
 
-#define CHECK_XRPNT if(xrpnt >= &xr[SBLIMIT][0]) \
+// About 2/3 of checks when checking on use.
+//#define CHECK_XRPNT_ON_SET 1
+
+#ifdef CHECK_XRPNT_ON_SET
+#define CHECK_XRPNT_SET do { if(xrpnt >= xrpntlimit) \
 { \
 	if(NOQUIET) \
-		error2("attempted xrpnt overflow (%p !< %p)", (void*) xrpnt, (void*) &xr[SBLIMIT][0]); \
+		error2("attempted xrpnt overflow (%p !< %p)", (void*) xrpnt, (void*) xrpntlimit); \
 	return 1; \
-}
+} } while(0)
+#define CHECK_XRPNT_USE
+#else
+#define CHECK_XRPNT_SET
+#define CHECK_XRPNT_USE do { if(xrpnt >= xrpntlimit) \
+{ \
+	if(NOQUIET) \
+		error2("attempted xrpnt overflow (%p !< %p)", (void*) xrpnt, (void*) xrpntlimit); \
+	return 1; \
+} } while(0)
+#endif
 
 	if(gr_info->block_type == 2)
 	{
@@ -815,7 +602,8 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 		int i,max[4];
 		int step=0,lwin=3,cb=0;
 		register real v = 0.0;
-		register int *m,mc;
+		register int mc;
+		register const short *m;
 
 		if(gr_info->mixed_block_flag)
 		{
@@ -844,6 +632,7 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 				{
 					mc    = *m++;
 					xrpnt = ((real *) xr) + (*m++);
+					CHECK_XRPNT_SET;
 					lwin  = *m++;
 					cb    = *m++;
 					if(lwin == 3)
@@ -889,7 +678,6 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 					y &= 0xf;
 #endif
 				}
-				CHECK_XRPNT;
 				if(x == 15 && h->linbits)
 				{
 					max[lwin] = cb;
@@ -897,6 +685,7 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 					x += ((MASK_UTYPE) mask) >> (BITSHIFT+8-h->linbits);
 					num -= h->linbits+1;
 					mask <<= h->linbits;
+					CHECK_XRPNT_USE;
 					if(MSB_MASK) *xrpnt = REAL_MUL_SCALE_LAYER3(-ispow[x], v, gainpow2_scale_idx);
 					else         *xrpnt = REAL_MUL_SCALE_LAYER3( ispow[x], v, gainpow2_scale_idx);
 
@@ -905,16 +694,16 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 				else if(x)
 				{
 					max[lwin] = cb;
+					CHECK_XRPNT_USE;
 					if(MSB_MASK) *xrpnt = REAL_MUL_SCALE_LAYER3(-ispow[x], v, gainpow2_scale_idx);
 					else         *xrpnt = REAL_MUL_SCALE_LAYER3( ispow[x], v, gainpow2_scale_idx);
 
 					num--;
 					mask <<= 1;
 				}
-				else *xrpnt = DOUBLE_TO_REAL(0.0);
 
 				xrpnt += step;
-				CHECK_XRPNT;
+				CHECK_XRPNT_SET;
 				if(y == 15 && h->linbits)
 				{
 					max[lwin] = cb;
@@ -922,6 +711,7 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 					y += ((MASK_UTYPE) mask) >> (BITSHIFT+8-h->linbits);
 					num -= h->linbits+1;
 					mask <<= h->linbits;
+					CHECK_XRPNT_USE;
 					if(MSB_MASK) *xrpnt = REAL_MUL_SCALE_LAYER3(-ispow[y], v, gainpow2_scale_idx);
 					else         *xrpnt = REAL_MUL_SCALE_LAYER3( ispow[y], v, gainpow2_scale_idx);
 
@@ -930,15 +720,16 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 				else if(y)
 				{
 					max[lwin] = cb;
+					CHECK_XRPNT_USE;
 					if(MSB_MASK) *xrpnt = REAL_MUL_SCALE_LAYER3(-ispow[y], v, gainpow2_scale_idx);
 					else         *xrpnt = REAL_MUL_SCALE_LAYER3( ispow[y], v, gainpow2_scale_idx);
 
 					num--;
 					mask <<= 1;
 				}
-				else *xrpnt = DOUBLE_TO_REAL(0.0);
 
 				xrpnt += step;
+				CHECK_XRPNT_SET;
 			}
 		}
 
@@ -973,6 +764,7 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 					{
 						mc = *m++;
 						xrpnt = ((real *) xr) + (*m++);
+						CHECK_XRPNT_SET;
 						lwin = *m++;
 						cb = *m++;
 						if(lwin == 3)
@@ -994,22 +786,22 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 					}
 					mc--;
 				}
-				CHECK_XRPNT;
 				if( (a & (0x8>>i)) )
 				{
 					max[lwin] = cb;
 					if(part2remain+num <= 0)
 					break;
 
+					CHECK_XRPNT_USE;
 					if(MSB_MASK) *xrpnt = -REAL_SCALE_LAYER3(v, gainpow2_scale_idx);
 					else         *xrpnt =  REAL_SCALE_LAYER3(v, gainpow2_scale_idx);
 
 					num--;
 					mask <<= 1;
 				}
-				else *xrpnt = DOUBLE_TO_REAL(0.0);
 
 				xrpnt += step;
+				CHECK_XRPNT_SET;
 			}
 		}
 
@@ -1017,19 +809,24 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 		{ /* short band? */
 			while(1)
 			{
-				for(;mc > 0;mc--)
-				{
-					CHECK_XRPNT;
-					*xrpnt = DOUBLE_TO_REAL(0.0); xrpnt += 3; /* short band -> step=3 */
-					*xrpnt = DOUBLE_TO_REAL(0.0); xrpnt += 3;
-				}
 				if(m >= me)
-				break;
+				{
+					if(mc > 0)
+					{
+						// No actual writes here because xr has been zeroed before.
+						// short band -> step=3, two steps per mc round
+						xrpnt += 6*mc;
+						mc = 0;
+						CHECK_XRPNT_SET;
+					}
+					break;
+				}
 
 				mc    = *m++;
 				xrpnt = ((real *) xr) + *m++;
+				CHECK_XRPNT_SET;
 				if(*m++ == 0)
-				break; /* optimize: field will be set to zero at the end of the function */
+				break; /* optimized: zero fields zero-initialized */
 
 				m++; /* cb */
 			}
@@ -1053,7 +850,7 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 		const unsigned char *pretab = pretab_choice[gr_info->preflag];
 		int i,max = -1;
 		int cb = 0;
-		int *m = map[sfreq][2];
+		const short *m = map[sfreq][2];
 		register real v = 0.0;
 		int mc = 0;
 
@@ -1109,7 +906,6 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 #endif
 				}
 
-				CHECK_XRPNT;
 				if(x == 15 && h->linbits)
 				{
 					max = cb;
@@ -1117,6 +913,7 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 					x += ((MASK_UTYPE) mask) >> (BITSHIFT+8-h->linbits);
 					num -= h->linbits+1;
 					mask <<= h->linbits;
+					CHECK_XRPNT_USE;
 					if(MSB_MASK) *xrpnt++ = REAL_MUL_SCALE_LAYER3(-ispow[x], v, gainpow2_scale_idx);
 					else         *xrpnt++ = REAL_MUL_SCALE_LAYER3( ispow[x], v, gainpow2_scale_idx);
 
@@ -1125,15 +922,16 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 				else if(x)
 				{
 					max = cb;
+					CHECK_XRPNT_USE;
 					if(MSB_MASK) *xrpnt++ = REAL_MUL_SCALE_LAYER3(-ispow[x], v, gainpow2_scale_idx);
 					else         *xrpnt++ = REAL_MUL_SCALE_LAYER3( ispow[x], v, gainpow2_scale_idx);
 					num--;
 
 					mask <<= 1;
 				}
-				else *xrpnt++ = DOUBLE_TO_REAL(0.0);
+				else xrpnt++;
+				CHECK_XRPNT_SET;
 
-				CHECK_XRPNT;
 				if(y == 15 && h->linbits)
 				{
 					max = cb;
@@ -1141,6 +939,7 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 					y += ((MASK_UTYPE) mask) >> (BITSHIFT+8-h->linbits);
 					num -= h->linbits+1;
 					mask <<= h->linbits;
+					CHECK_XRPNT_USE;
 					if(MSB_MASK) *xrpnt++ = REAL_MUL_SCALE_LAYER3(-ispow[y], v, gainpow2_scale_idx);
 					else         *xrpnt++ = REAL_MUL_SCALE_LAYER3( ispow[y], v, gainpow2_scale_idx);
 
@@ -1149,13 +948,15 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 				else if(y)
 				{
 					max = cb;
+					CHECK_XRPNT_USE;
 					if(MSB_MASK) *xrpnt++ = REAL_MUL_SCALE_LAYER3(-ispow[y], v, gainpow2_scale_idx);
 					else         *xrpnt++ = REAL_MUL_SCALE_LAYER3( ispow[y], v, gainpow2_scale_idx);
 
 					num--;
 					mask <<= 1;
 				}
-				else *xrpnt++ = DOUBLE_TO_REAL(0.0);
+				else xrpnt++;
+				CHECK_XRPNT_SET;
 			}
 		}
 
@@ -1202,20 +1003,21 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 					}
 					mc--;
 				}
-				CHECK_XRPNT;
 				if( (a & (0x8>>i)) )
 				{
 					max = cb;
 					if(part2remain+num <= 0)
 					break;
 
+					CHECK_XRPNT_USE;
 					if(MSB_MASK) *xrpnt++ = -REAL_SCALE_LAYER3(v, gainpow2_scale_idx);
 					else         *xrpnt++ =  REAL_SCALE_LAYER3(v, gainpow2_scale_idx);
 
 					num--;
 					mask <<= 1;
 				}
-				else *xrpnt++ = DOUBLE_TO_REAL(0.0);
+				else xrpnt++;
+				CHECK_XRPNT_SET;
 			}
 		}
 
@@ -1226,6 +1028,7 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 	part2remain += num;
 	backbits(fr, num);
 	num = 0;
+
 	}
 	else
 	{
@@ -1238,8 +1041,7 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 		gr_info->maxb       = 1;
 	}
 
-	while(xrpnt < &xr[SBLIMIT][0]) 
-	*xrpnt++ = DOUBLE_TO_REAL(0.0);
+	// Relying on initial zeroing if xr has not been written to fully.
 
 	while( part2remain > 16 )
 	{
@@ -1249,7 +1051,8 @@ static int III_dequantize_sample(mpg123_handle *fr, real xr[SBLIMIT][SSLIMIT],in
 	if(part2remain > 0) skipbits(fr, part2remain);
 	else if(part2remain < 0)
 	{
-		debug1("Can't rewind stream by %d bits!",-part2remain);
+		if(VERBOSE2)
+			error1("Can't rewind stream by %d bits!",-part2remain);
 		return 1; /* -> error */
 	}
 	return 0;
@@ -1451,7 +1254,7 @@ static void III_antialias(real xr[SBLIMIT][SSLIMIT],struct gr_info_s *gr_info)
 		for(sb=sblim; sb; sb--,xr1+=10)
 		{
 			int ss;
-			real *cs=aa_cs,*ca=aa_ca;
+			const real *cs=aa_cs,*ca=aa_ca;
 			real *xr2 = xr1;
 
 			for(ss=7;ss>=0;ss--)
@@ -1498,14 +1301,9 @@ static void III_antialias(real xr[SBLIMIT][SSLIMIT],struct gr_info_s *gr_info)
 	    Mathematics of Computation, Volume 32, Number 141, January 1978,
 	    Pages 175-199
 */
-
-/* Calculation of the inverse MDCT
-   used to be static without 3dnow - does that really matter? */
-void dct36(real *inbuf,real *o1,real *o2,real *wintab,real *tsbuf)
+static void INT123_dct36(real *inbuf,real *o1,real *o2,const real *wintab,real *tsbuf)
 {
-#ifdef NEW_DCT9
 	real tmp[18];
-#endif
 
 	{
 		register real *in = inbuf;
@@ -1520,8 +1318,6 @@ void dct36(real *inbuf,real *o1,real *o2,real *wintab,real *tsbuf)
 		in[17]+=in[15]; in[15]+=in[13]; in[13]+=in[11]; in[11]+=in[9];
 		in[9] +=in[7];  in[7] +=in[5];  in[5] +=in[3];  in[3] +=in[1];
 
-
-#ifdef NEW_DCT9
 #if 1
 		{
 			real t3;
@@ -1637,7 +1433,7 @@ void dct36(real *inbuf,real *o1,real *o2,real *wintab,real *tsbuf)
 			t0 = REAL_MUL(cos9[0], (in[5] + in[9]));
 			t1 = REAL_MUL(cos9[1], (in[9] - in[17]));
 
-			tmp[13] = REAL_MUL((t4 + t2 + t2), tfcos36[17-13]);
+			tmp[13] = REAL_MUL((t4 + t2 + t2), INT123_tfcos36[17-13]);
 			t2 = REAL_MUL(cos9[2], (in[5] + in[17]));
 
 			t6 = t3 - t0 - t2;
@@ -1649,21 +1445,21 @@ void dct36(real *inbuf,real *o1,real *o2,real *wintab,real *tsbuf)
 			t7 = REAL_MUL(COS6_1, in[7]);
 
 			t1 = t2 + t4 + t7;
-			tmp[17] = REAL_MUL((t0 + t1), tfcos36[17-17]);
-			tmp[9]  = REAL_MUL((t0 - t1), tfcos36[17-9]);
+			tmp[17] = REAL_MUL((t0 + t1), INT123_tfcos36[17-17]);
+			tmp[9]  = REAL_MUL((t0 - t1), INT123_tfcos36[17-9]);
 			t1 = REAL_MUL(cos18[2], (in[3] + in[15]));
 			t2 += t1 - t7;
 
-			tmp[14] = REAL_MUL((t3 + t2), tfcos36[17-14]);
+			tmp[14] = REAL_MUL((t3 + t2), INT123_tfcos36[17-14]);
 			t0 = REAL_MUL(COS6_1, (in[11] + in[15] - in[3]));
-			tmp[12] = REAL_MUL((t3 - t2), tfcos36[17-12]);
+			tmp[12] = REAL_MUL((t3 - t2), INT123_tfcos36[17-12]);
 
 			t4 -= t1 + t7;
 
-			tmp[16] = REAL_MUL((t5 - t0), tfcos36[17-16]);
-			tmp[10] = REAL_MUL((t5 + t0), tfcos36[17-10]);
-			tmp[15] = REAL_MUL((t6 + t4), tfcos36[17-15]);
-			tmp[11] = REAL_MUL((t6 - t4), tfcos36[17-11]);
+			tmp[16] = REAL_MUL((t5 - t0), INT123_tfcos36[17-16]);
+			tmp[10] = REAL_MUL((t5 + t0), INT123_tfcos36[17-10]);
+			tmp[15] = REAL_MUL((t6 + t4), INT123_tfcos36[17-15]);
+			tmp[11] = REAL_MUL((t6 - t4), INT123_tfcos36[17-11]);
 		}
 
 #define MACRO(v) { \
@@ -1677,7 +1473,7 @@ void dct36(real *inbuf,real *o1,real *o2,real *wintab,real *tsbuf)
 
 		{
 			register real *out2 = o2;
-			register real *w = wintab;
+			register const real *w = wintab;
 			register real *out1 = o1;
 			register real *ts = tsbuf;
 
@@ -1692,100 +1488,111 @@ void dct36(real *inbuf,real *o1,real *o2,real *wintab,real *tsbuf)
 			MACRO(8);
 		}
 
-#else
-
-		{
-
-#define MACRO0(v) { \
-	real tmp; \
-	out2[9+(v)] = REAL_MUL((tmp = sum0 + sum1), w[27+(v)]); \
-	out2[8-(v)] = REAL_MUL(tmp, w[26-(v)]);   } \
-	sum0 -= sum1; \
-	ts[SBLIMIT*(8-(v))] = out1[8-(v)] + REAL_MUL(sum0, w[8-(v)]); \
-	ts[SBLIMIT*(9+(v))] = out1[9+(v)] + REAL_MUL(sum0, w[9+(v)]);
-#define MACRO1(v) { \
-	real sum0,sum1; \
-	sum0 = tmp1a + tmp2a; \
-	sum1 = REAL_MUL((tmp1b + tmp2b), tfcos36[(v)]); \
-	MACRO0(v); }
-#define MACRO2(v) { \
-	real sum0,sum1; \
-	sum0 = tmp2a - tmp1a; \
-	sum1 = REAL_MUL((tmp2b - tmp1b), tfcos36[(v)]); \
-	MACRO0(v); }
-
-			register const real *c = COS9;
-			register real *out2 = o2;
-			register real *w = wintab;
-			register real *out1 = o1;
-			register real *ts = tsbuf;
-
-			real ta33,ta66,tb33,tb66;
-
-			ta33 = REAL_MUL(in[2*3+0], c[3]);
-			ta66 = REAL_MUL(in[2*6+0], c[6]);
-			tb33 = REAL_MUL(in[2*3+1], c[3]);
-			tb66 = REAL_MUL(in[2*6+1], c[6]);
-
-			{ 
-				real tmp1a,tmp2a,tmp1b,tmp2b;
-				tmp1a = REAL_MUL(in[2*1+0], c[1]) + ta33 + REAL_MUL(in[2*5+0], c[5]) + REAL_MUL(in[2*7+0], c[7]);
-				tmp1b = REAL_MUL(in[2*1+1], c[1]) + tb33 + REAL_MUL(in[2*5+1], c[5]) + REAL_MUL(in[2*7+1], c[7]);
-				tmp2a = REAL_MUL(in[2*2+0], c[2]) + REAL_MUL(in[2*4+0], c[4]) + ta66 + REAL_MUL(in[2*8+0], c[8]);
-				tmp2b = REAL_MUL(in[2*2+1], c[2]) + REAL_MUL(in[2*4+1], c[4]) + tb66 + REAL_MUL(in[2*8+1], c[8]);
-
-				MACRO1(0);
-				MACRO2(8);
-			}
-
-			{
-				real tmp1a,tmp2a,tmp1b,tmp2b;
-				tmp1a = REAL_MUL(( in[2*1+0] - in[2*5+0] - in[2*7+0] ), c[3]);
-				tmp1b = REAL_MUL(( in[2*1+1] - in[2*5+1] - in[2*7+1] ), c[3]);
-				tmp2a = REAL_MUL(( in[2*2+0] - in[2*4+0] - in[2*8+0] ), c[6]) - in[2*6+0] + in[2*0+0];
-				tmp2b = REAL_MUL(( in[2*2+1] - in[2*4+1] - in[2*8+1] ), c[6]) - in[2*6+1] + in[2*0+1];
-
-				MACRO1(1);
-				MACRO2(7);
-			}
-
-			{
-				real tmp1a,tmp2a,tmp1b,tmp2b;
-				tmp1a =   REAL_MUL(in[2*1+0], c[5]) - ta33 - REAL_MUL(in[2*5+0], c[7]) + REAL_MUL(in[2*7+0], c[1]);
-				tmp1b =   REAL_MUL(in[2*1+1], c[5]) - tb33 - REAL_MUL(in[2*5+1], c[7]) + REAL_MUL(in[2*7+1], c[1]);
-				tmp2a = - REAL_MUL(in[2*2+0], c[8]) - REAL_MUL(in[2*4+0], c[2]) + ta66 + REAL_MUL(in[2*8+0], c[4]);
-				tmp2b = - REAL_MUL(in[2*2+1], c[8]) - REAL_MUL(in[2*4+1], c[2]) + tb66 + REAL_MUL(in[2*8+1], c[4]);
-
-				MACRO1(2);
-				MACRO2(6);
-			}
-
-			{
-				real tmp1a,tmp2a,tmp1b,tmp2b;
-				tmp1a =   REAL_MUL(in[2*1+0], c[7]) - ta33 + REAL_MUL(in[2*5+0], c[1]) - REAL_MUL(in[2*7+0], c[5]);
-				tmp1b =   REAL_MUL(in[2*1+1], c[7]) - tb33 + REAL_MUL(in[2*5+1], c[1]) - REAL_MUL(in[2*7+1], c[5]);
-				tmp2a = - REAL_MUL(in[2*2+0], c[4]) + REAL_MUL(in[2*4+0], c[8]) + ta66 - REAL_MUL(in[2*8+0], c[2]);
-				tmp2b = - REAL_MUL(in[2*2+1], c[4]) + REAL_MUL(in[2*4+1], c[8]) + tb66 - REAL_MUL(in[2*8+1], c[2]);
-
-				MACRO1(3);
-				MACRO2(5);
-			}
-
-			{
-				real sum0,sum1;
-				sum0 =  in[2*0+0] - in[2*2+0] + in[2*4+0] - in[2*6+0] + in[2*8+0];
-				sum1 = REAL_MUL((in[2*0+1] - in[2*2+1] + in[2*4+1] - in[2*6+1] + in[2*8+1] ), tfcos36[4]);
-				MACRO0(4);
-			}
-		}
-#endif
-
 	}
 }
 
+// Wrap the assembly routine calls into C functions that serve as jump target to satisfy
+// indirect branch protection if the toolchain enables that. Otherwise, we'd need to anticipate
+// that in the assembly (and ensure assemblers support endbr64 and friends).
+// Loss of efficiency:
+
+// In the case of one static optimization choice, we do not have that problem.
+
+#ifdef OPT_THE_DCT36
+
+#define DCT36_WRAP(asmfunc) \
+static void asmfunc ## _wrap(real *inbuf,real *o1,real *o2,const real *wintab,real *tsbuf) \
+{ \
+	asmfunc(inbuf, o1, o2, wintab, tsbuf); \
+}
+
+#ifdef OPT_SSE
+DCT36_WRAP(INT123_dct36_sse)
+#endif
+#ifdef OPT_3DNOWEXT_VINTAGE
+DCT36_WRAP(INT123_dct36_3dnowext)
+#endif
+#ifdef OPT_3DNOW_VINTAGE
+DCT36_WRAP(INT123_dct36_3dnow)
+#endif
+#ifdef OPT_X86_64
+DCT36_WRAP(INT123_dct36_x86_64)
+#endif
+#ifdef OPT_AVX
+DCT36_WRAP(INT123_dct36_avx)
+#endif
+#ifdef OPT_NEON
+DCT36_WRAP(INT123_dct36_neon)
+#endif
+#ifdef OPT_NEON64
+DCT36_WRAP(INT123_dct36_neon64)
+#endif
+
+int INT123_dct36_match(mpg123_handle *fr, enum optdec t)
+{
+#ifdef OPT_SSE
+	if(t == sse && fr->cpu_opts.the_dct36 == INT123_dct36_sse_wrap)
+		return 1;
+#endif
+#ifdef OPT_3DNOWEXT_VINTAGE
+	if(t == dreidnowext_vintage && fr->cpu_opts.the_dct36 == INT123_dct36_3dnowext_wrap)
+		return 1;
+#endif
+#ifdef OPT_3DNOW_VINTAGE
+	if(t == dreidnow_vintage && fr->cpu_opts.the_dct36 == INT123_dct36_3dnow_wrap)
+		return 1;
+#endif
+	return 0;
+}
+
+void INT123_dct36_choose(mpg123_handle *fr)
+{
+	switch(fr->cpu_opts.type)
+	{
+#ifdef OPT_SSE
+	case sse:
+		fr->cpu_opts.the_dct36 = INT123_dct36_sse_wrap;
+	break;
+#endif
+#ifdef OPT_3DNOWEXT_VINTAGE
+	case dreidnowext_vintage:
+		fr->cpu_opts.the_dct36 = INT123_dct36_3dnowext_wrap;
+	break;
+#endif
+#ifdef OPT_3DNOW_VINTAGE
+	case dreidnow_vintage:
+		fr->cpu_opts.the_dct36 = INT123_dct36_3dnow_wrap;
+	break;
+#endif
+#ifdef OPT_AVX
+	case avx:
+		fr->cpu_opts.the_dct36 = INT123_dct36_avx_wrap;
+	break;
+#endif
+#ifdef OPT_X86_64
+	case x86_64:
+		fr->cpu_opts.the_dct36 = INT123_dct36_x86_64_wrap;
+	break;
+#endif
+#ifdef OPT_NEON
+	case neon:
+		fr->cpu_opts.the_dct36 = INT123_dct36_neon_wrap;
+	break;
+#endif
+#ifdef OPT_NEON64
+	case neon:
+		fr->cpu_opts.the_dct36 = INT123_dct36_neon64_wrap;
+	break;
+#endif
+	default:
+		fr->cpu_opts.the_dct36 = INT123_dct36;
+	}
+}
+
+#endif
 
 /* new DCT12 */
-static void dct12(real *in,real *rawout1,real *rawout2,register real *wi,register real *ts)
+static void dct12(real *in,real *rawout1,real *rawout2,register const real *wi,register real *ts)
 {
 #define DCT12_PART1 \
 	in5 = in[5*3];  \
@@ -1977,9 +1784,76 @@ static void III_hybrid(real fsIn[SBLIMIT][SSLIMIT], real tsOut[SSLIMIT][SBLIMIT]
 	}
 }
 
+#ifndef NO_MOREINFO
+static void fill_pinfo_side(mpg123_handle *fr, struct III_sideinfo *si, int gr, int stereo1)
+{
+	int   i, sb;
+	float ifqstep; /* Why not double? */
+	int ch, ss;;
+
+	for(ch = 0; ch < stereo1; ++ch)
+	{
+		struct gr_info_s *gr_infos = &(si->ch[ch].gr[gr]);
+		fr->pinfo->big_values[gr][ch] = gr_infos->big_values;
+		fr->pinfo->scalefac_scale[gr][ch] = gr_infos->scalefac_scale;
+		fr->pinfo->mixed[gr][ch] = gr_infos->mixed_block_flag;
+		fr->pinfo->blocktype[gr][ch] = gr_infos->block_type;
+		fr->pinfo->mainbits[gr][ch] = gr_infos->part2_3_length;
+		fr->pinfo->preflag[gr][ch] = gr_infos->preflag;
+		if(gr == 1)
+			fr->pinfo->scfsi[ch] = gr_infos->scfsi;
+	}
+
+	for(ch = 0; ch < stereo1; ++ch)
+	{
+		struct gr_info_s *gr_infos = &(si->ch[ch].gr[gr]);
+		ifqstep = (fr->pinfo->scalefac_scale[gr][ch] == 0) ? .5 : 1.0;
+		if(2 == gr_infos->block_type)
+		{
+			for(i = 0; i < 3; ++i)
+			{
+				for(sb = 0; sb < 12; ++sb)
+				{
+					int	  j = 3 * sb + i;
+					/*
+						 is_p = scalefac[sfb*3+lwin-gr_infos->mixed_block_flag]; 
+					*/
+					/* scalefac was copied into pinfo->sfb_s[] before */
+					fr->pinfo->sfb_s[gr][ch][j] = -ifqstep *
+						fr->pinfo->sfb_s[gr][ch][j - gr_infos->mixed_block_flag];
+					fr->pinfo->sfb_s[gr][ch][j] -= 2 *
+						(fr->pinfo->sub_gain[gr][ch][i]);
+				}
+				fr->pinfo->sfb_s[gr][ch][3 * sb + i] =
+					-2 * (fr->pinfo->sub_gain[gr][ch][i]);
+			}
+		} else
+		{
+			for(sb = 0; sb < 21; ++sb)
+			{
+				/* scalefac was copied into pinfo->sfb[] before */
+				fr->pinfo->sfb[gr][ch][sb] = fr->pinfo->sfb_s[gr][ch][sb];
+				if (gr_infos->preflag)
+					fr->pinfo->sfb[gr][ch][sb] += pretab_choice[1][sb];
+				fr->pinfo->sfb[gr][ch][sb] *= -ifqstep;
+			}
+			fr->pinfo->sfb[gr][ch][21] = 0;
+		}
+	}
+
+
+	for(ch = 0; ch < stereo1; ++ch)
+	{
+		int j = 0;
+		for(sb = 0; sb < SBLIMIT; ++sb)
+			for (ss = 0; ss < SSLIMIT; ++ss, ++j)
+				fr->pinfo->xr[gr][ch][j] = fr->layer3.hybrid_in[ch][sb][ss];
+	}
+}
+#endif
 
 /* And at the end... the main layer3 handler */
-int do_layer3(mpg123_handle *fr)
+int INT123_do_layer3(mpg123_handle *fr)
 {
 	int gr, ch, ss,clip=0;
 	int scalefacs[2][39]; /* max 39 for short[13][3] mode, mixed: 38, long: 22 */
@@ -1987,7 +1861,7 @@ int do_layer3(mpg123_handle *fr)
 	int stereo = fr->stereo;
 	int single = fr->single;
 	int ms_stereo,i_stereo;
-	int sfreq = fr->sampling_frequency;
+	int sfreq = fr->hdr.sampling_frequency;
 	int stereo1,granules;
 
 	if(stereo == 1)
@@ -2000,14 +1874,14 @@ int do_layer3(mpg123_handle *fr)
 	else
 	stereo1 = 2;
 
-	if(fr->mode == MPG_MD_JOINT_STEREO)
+	if(fr->hdr.mode == MPG_MD_JOINT_STEREO)
 	{
-		ms_stereo = (fr->mode_ext & 0x2)>>1;
-		i_stereo  = fr->mode_ext & 0x1;
+		ms_stereo = (fr->hdr.mode_ext & 0x2)>>1;
+		i_stereo  = fr->hdr.mode_ext & 0x1;
 	}
 	else ms_stereo = i_stereo = 0;
 
-	granules = fr->lsf ? 1 : 2;
+	granules = fr->hdr.lsf ? 1 : 2;
 
 	/* quick hack to keep the music playing */
 	/* after having seen this nasty test file... */
@@ -2017,8 +1891,14 @@ int do_layer3(mpg123_handle *fr)
 		return clip;
 	}
 
-	set_pointer(fr,sideinfo.main_data_begin);
-
+	INT123_set_pointer(fr, 1, sideinfo.main_data_begin);
+#ifndef NO_MOREINFO
+	if(fr->pinfo)
+	{
+		fr->pinfo->maindata = sideinfo.main_data_begin;
+		fr->pinfo->padding  = fr->hdr.padding;
+	}
+#endif
 	for(gr=0;gr<granules;gr++)
 	{
 		/*  hybridIn[2][SBLIMIT][SSLIMIT] */
@@ -2029,14 +1909,46 @@ int do_layer3(mpg123_handle *fr)
 		{
 			struct gr_info_s *gr_info = &(sideinfo.ch[0].gr[gr]);
 			long part2bits;
-			if(fr->lsf)
+			if(gr_info->part2_3_length > fr->bits_avail)
+			{
+				if(NOQUIET)
+					error2(
+						"part2_3_length (%u) too large for available bit count (%li)"
+					,	gr_info->part2_3_length, fr->bits_avail );
+				return clip;
+			}
+			if(fr->hdr.lsf)
 			part2bits = III_get_scale_factors_2(fr, scalefacs[0],gr_info,0);
 			else
 			part2bits = III_get_scale_factors_1(fr, scalefacs[0],gr_info,0,gr);
 
+			if(part2bits < 0)
+			{
+				if(VERBOSE2)
+					error("not enough bits for scale factors");
+				return clip;
+			}
+
+#ifndef NO_MOREINFO
+			if(fr->pinfo)
+			{
+				int i;
+				fr->pinfo->sfbits[gr][0] = part2bits;
+				for(i=0; i<39; ++i)
+					fr->pinfo->sfb_s[gr][0][i] = scalefacs[0][i];
+			}
+#endif
+
 			if(III_dequantize_sample(fr, hybridIn[0], scalefacs[0],gr_info,sfreq,part2bits))
 			{
-				if(VERBOSE2) error("dequantization failed!");
+				if(NOQUIET)
+					error("dequantization failed!");
+				return clip;
+			}
+			if(fr->bits_avail < 0)
+			{
+				if(NOQUIET)
+					error("bit deficit after dequant");
 				return clip;
 			}
 		}
@@ -2045,14 +1957,38 @@ int do_layer3(mpg123_handle *fr)
 		{
 			struct gr_info_s *gr_info = &(sideinfo.ch[1].gr[gr]);
 			long part2bits;
-			if(fr->lsf) 
+			if(fr->hdr.lsf) 
 			part2bits = III_get_scale_factors_2(fr, scalefacs[1],gr_info,i_stereo);
 			else
 			part2bits = III_get_scale_factors_1(fr, scalefacs[1],gr_info,1,gr);
 
+			if(part2bits < 0)
+			{
+				if(VERBOSE2)
+					error("not enough bits for scale factors");
+				return clip;
+			}
+
+#ifndef NO_MOREINFO
+			if(fr->pinfo)
+			{
+				int i;
+				fr->pinfo->sfbits[gr][1] = part2bits;
+				for(i=0; i<39; ++i)
+					fr->pinfo->sfb_s[gr][1][i] = scalefacs[1][i];
+			}
+#endif
+
 			if(III_dequantize_sample(fr, hybridIn[1],scalefacs[1],gr_info,sfreq,part2bits))
 			{
-				if(VERBOSE2) error("dequantization failed!");
+				if(NOQUIET)
+					error("dequantization failed!");
+				return clip;
+			}
+			if(fr->bits_avail < 0)
+			{
+				if(NOQUIET)
+					error("bit deficit after dequant");
 				return clip;
 			}
 
@@ -2071,7 +2007,7 @@ int do_layer3(mpg123_handle *fr)
 				}
 			}
 
-			if(i_stereo) III_i_stereo(hybridIn,scalefacs[1],gr_info,sfreq,ms_stereo,fr->lsf);
+			if(i_stereo) III_i_stereo(hybridIn,scalefacs[1],gr_info,sfreq,ms_stereo,fr->hdr.lsf);
 
 			if(ms_stereo || i_stereo || (single == SINGLE_MIX) )
 			{
@@ -2101,6 +2037,11 @@ int do_layer3(mpg123_handle *fr)
 				break;
 			}
 		}
+
+#ifndef NO_MOREINFO
+		if(fr->pinfo)
+			fill_pinfo_side(fr, &sideinfo, gr, stereo1);
+#endif
 
 		for(ch=0;ch<stereo1;ch++)
 		{
@@ -2133,8 +2074,8 @@ int do_layer3(mpg123_handle *fr)
 				if(n > (SSLIMIT-ss)) n=SSLIMIT-ss;
 
 				/* Clip counting makes no sense with this function. */
-				absynth_1to1_i486(hybridOut[0][ss], 0, fr, n);
-				absynth_1to1_i486(hybridOut[1][ss], 1, fr, n);
+				INT123_absynth_1to1_i486(hybridOut[0][ss], 0, fr, n);
+				INT123_absynth_1to1_i486(hybridOut[1][ss], 1, fr, n);
 				ss+=n;
 				fr->buffer.fill+=(2*2*32)*n;
 			}

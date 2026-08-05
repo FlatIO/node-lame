@@ -4,7 +4,7 @@
 	The mpg123 code is determined to keep it's legacy. A legacy of old, old UNIX.
 	So anything possibly somewhat advanced should be considered to be put here, with proper #ifdef;-)
 
-	copyright 2007-2016 by the mpg123 project - free software under the terms of the LGPL 2.1
+	copyright 2007-2023 by the mpg123 project - free software under the terms of the LGPL 2.1
 	see COPYING and AUTHORS files in distribution or http://mpg123.org
 	initially written by Thomas Orgis, Windows Unicode stuff by JonY.
 */
@@ -39,146 +39,37 @@
 #include <shlwapi.h>
 #endif
 
-#ifdef USE_MODULES
-#  ifdef HAVE_DLFCN_H
-#    include <dlfcn.h>
-#  endif
-#endif
-
-#include "debug.h"
+#include "../common/debug.h"
 
 #ifndef WINDOWS_UWP
 
-char *compat_getenv(const char* name)
+char *INT123_compat_getenv(const char* name)
 {
 	char *ret = NULL;
 #ifdef WANT_WIN32_UNICODE
 	wchar_t *env;
 	wchar_t *wname = NULL;
-	if(win32_utf8_wide(name, &wname, NULL) > 0)
+	if(INT123_win32_utf8_wide(name, &wname, NULL) > 0)
 	{
 		env = _wgetenv(wname);
 		free(wname);
 		if(env)
-			win32_wide_utf8(env, &ret, NULL);
+			INT123_win32_wide_utf8(env, &ret, NULL);
 	}
 #else
 	ret = getenv(name);
 	if(ret)
-		ret = compat_strdup(ret);
+		ret = INT123_compat_strdup(ret);
 #endif
 	return ret;
 }
 
-#ifdef WANT_WIN32_UNICODE
-
-/* Convert unix UTF-8 (or ASCII) paths to Windows wide character paths. */
-static wchar_t* u2wpath(const char *upath)
-{
-	wchar_t* wpath, *p;
-	if(!upath || win32_utf8_wide(upath, &wpath, NULL) < 1)
-		return NULL;
-	for(p=wpath; *p; ++p)
-		if(*p == L'/')
-			*p = L'\\';
-	return wpath;
-}
-
-/* Convert Windows wide character paths to unix UTF-8. */
-static char* w2upath(const wchar_t *wpath)
-{
-	char* upath, *p;
-	if(!wpath || win32_wide_utf8(wpath, &upath, NULL) < 1)
-		return NULL;
-	for(p=upath; *p; ++p)
-		if(*p == '\\')
-			*p = '/';
-	return upath;
-}
-
-/* An absolute path that is too long and not already marked with
-   \\?\ can be marked as a long one and still work. */
-static int wpath_need_elongation(wchar_t *wpath)
-{
-	if( wpath && !PathIsRelativeW(wpath)
-	&&	wcslen(wpath) > MAX_PATH-1
-	&&	wcsncmp(L"\\\\?\\", wpath, 4) )
-		return 1;
-	else
-		return 0;
-}
-
-/* Take any wide windows path and turn it into a path that is allowed
-   to be longer than MAX_PATH, if it is not already. */
-static wchar_t* wlongpath(wchar_t *wpath)
-{
-	size_t len, plen;
-	const wchar_t *prefix = L"";
-	wchar_t *wlpath = NULL;
-	if(!wpath)
-		return NULL;
-
-	/* Absolute paths that do not start with \\?\ get that prepended
-	   to allow them being long. */
-	if(!PathIsRelativeW(wpath) && wcsncmp(L"\\\\?\\", wpath, 4))
-	{
-		if(wcslen(wpath) >= 2 && PathIsUNCW(wpath))
-		{
-			/* \\server\path -> \\?\UNC\server\path */
-			prefix = L"\\\\?\\UNC";
-			++wpath; /* Skip the first \. */
-		}
-		else /* c:\some/path -> \\?\c:\some\path */
-			prefix = L"\\\\?\\";
-	}
-	plen = wcslen(prefix);
-	len = plen + wcslen(wpath);
-	wlpath = malloc(len+1*sizeof(wchar_t));
-	if(wlpath)
-	{
-		/* Brute force memory copying, swprintf is too dandy. */
-		memcpy(wlpath, prefix, sizeof(wchar_t)*plen);
-		memcpy(wlpath+plen, wpath, sizeof(wchar_t)*(len-plen));
-		wlpath[len] = 0;
-	}
-	return wlpath;
-}
-
-/* Convert unix path to wide windows path, optionally marking
-   it as long path if necessary. */
-static wchar_t* u2wlongpath(const char *upath)
-{
-	wchar_t *wpath  = NULL;
-	wchar_t *wlpath = NULL;
-	wpath = u2wpath(upath);
-	if(wpath_need_elongation(wpath))
-	{
-		wlpath = wlongpath(wpath);
-		free(wpath);
-		wpath = wlpath;
-	}
-	return wpath;
-}
-
 #endif
 
-#else
-
-static wchar_t* u2wlongpath(const char *upath)
-{
-	wchar_t* wpath, *p;
-	if (!upath || win32_utf8_wide(upath, &wpath, NULL) < 1)
-		return NULL;
-	for (p = wpath; *p; ++p)
-		if (*p == L'/')
-			*p = L'\\';
-	return wpath;
-}
-
-#endif
+#include "wpathconv.h"
 
 /* Always add a default permission mask in case of flags|O_CREAT. */
-int compat_open(const char *filename, int flags)
+int INT123_compat_open(const char *filename, int flags)
 {
 	int ret;
 #if defined (WANT_WIN32_UNICODE)
@@ -197,7 +88,7 @@ int compat_open(const char *filename, int flags)
 open_fallback:
 #endif
 
-#if (defined(WIN32) && !defined (__CYGWIN__))
+#if defined(MPG123_COMPAT_MSVCRT_IO)
 	/* MSDN says POSIX function is deprecated beginning in Visual C++ 2005 */
 	/* Try plain old _open(), if it fails, do nothing */
 	ret = _open(filename, flags|_O_BINARY, _S_IREAD | _S_IWRITE);
@@ -214,8 +105,8 @@ open_ok:
 }
 
 /* Moved over from wav.c, logic with fallbacks added from the
-   example of compat_open(). */
-FILE* compat_fopen(const char *filename, const char *mode)
+   example of INT123_compat_open(). */
+FILE* INT123_compat_fopen(const char *filename, const char *mode)
 {
 	FILE* stream = NULL;
 #ifdef WANT_WIN32_UNICODE
@@ -226,7 +117,7 @@ FILE* compat_fopen(const char *filename, const char *mode)
 	wname = u2wlongpath(filename);
 	if(!wname)
 		goto fopen_fallback;
-	cnt = win32_utf8_wide(mode, &wmode, NULL);
+	cnt = INT123_win32_utf8_wide(mode, &wmode, NULL);
 	if( (wmode == NULL) || (cnt == 0))
 		goto fopen_fallback;
 
@@ -245,66 +136,37 @@ fopen_ok:
 	return stream;
 }
 
-FILE* compat_fdopen(int fd, const char *mode)
+FILE* INT123_compat_fdopen(int fd, const char *mode)
 {
+#if defined(MPG123_COMPAT_MSVCRT_IO)
+	return _fdopen(fd, mode);
+#else
 	return fdopen(fd, mode);
+#endif
 }
 
-int compat_close(int infd)
+int INT123_compat_close(int infd)
 {
-#if (defined(WIN32) && !defined (__CYGWIN__)) /* MSDN says POSIX function is deprecated beginning in Visual C++ 2005 */
+#if defined(MPG123_COMPAT_MSVCRT_IO)
 	return _close(infd);
 #else
 	return close(infd);
 #endif
 }
 
-int compat_fclose(FILE *stream)
+int INT123_compat_fclose(FILE *stream)
 {
 	return fclose(stream);
 }
 
-/* Windows Unicode stuff */
-
-#ifdef WANT_WIN32_UNICODE
-int win32_wide_utf8(const wchar_t * const wptr, char **mbptr, size_t * buflen)
+void INT123_compat_binmode(int fd, int enable)
 {
-  size_t len;
-  char *buf;
-  int ret = 0;
-
-  len = WideCharToMultiByte(CP_UTF8, 0, wptr, -1, NULL, 0, NULL, NULL); /* Get utf-8 string length */
-  buf = calloc(len + 1, sizeof (char)); /* Can we assume sizeof char always = 1? */
-
-  if(!buf) len = 0;
-  else {
-    if (len != 0) ret = WideCharToMultiByte(CP_UTF8, 0, wptr, -1, buf, len, NULL, NULL); /*Do actual conversion*/
-    buf[len] = '0'; /* Must terminate */
-  }
-  *mbptr = buf; /* Set string pointer to allocated buffer */
-  if(buflen != NULL) *buflen = (len) * sizeof (char); /* Give length of allocated memory if needed. */
-  return ret;
-}
-
-int win32_utf8_wide(const char *const mbptr, wchar_t **wptr, size_t *buflen)
-{
-  size_t len;
-  wchar_t *buf;
-  int ret = 0;
-
-  len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, mbptr, -1, NULL, 0); /* Get converted size */
-  buf = calloc(len + 1, sizeof (wchar_t)); /* Allocate memory accordingly */
-
-  if(!buf) len = 0;
-  else {
-    if (len != 0) ret = MultiByteToWideChar (CP_UTF8, MB_ERR_INVALID_CHARS, mbptr, -1, buf, len); /* Do conversion */
-    buf[len] = L'0'; /* Must terminate */
-  }
-  *wptr = buf; /* Set string pointer to allocated buffer */
-  if (buflen != NULL) *buflen = len * sizeof (wchar_t); /* Give length of allocated memory if needed. */
-  return ret; /* Number of characters written */
-}
+#if   defined(HAVE__SETMODE)
+	_setmode(fd, enable ? _O_BINARY : _O_TEXT);
+#elif defined(HAVE_SETMODE)
+	setmode(fd, enable ? O_BINARY : O_TEXT);
 #endif
+}
 
 #ifndef WINDOWS_UWP
 
@@ -321,7 +183,11 @@ int win32_utf8_wide(const char *const mbptr, wchar_t **wptr, size_t *buflen)
 	it late to some official APIs, that's still fine with us.
 */
 
-char* compat_catpath(const char *prefix, const char* path)
+#ifdef WANT_WIN32_UNICODE
+typedef HRESULT (__stdcall *PCA_ptr)( const wchar_t *, const wchar_t*, unsigned long, wchar_t **);
+#endif
+
+char* INT123_compat_catpath(const char *prefix, const char* path)
 {
 	char *ret = NULL;
 #ifdef WANT_WIN32_UNICODE
@@ -335,8 +201,7 @@ char* compat_catpath(const char *prefix, const char* path)
 		ThOr: I presume this hack is for supporting pre-8 Windows, as
 		from Windows 8 on, this is documented in the API.
 	*/
-	HRESULT (__stdcall *mypac)( const wchar_t *in, const wchar_t* more
-	,	unsigned long flags, wchar_t **out ) = NULL;
+	PCA_ptr mypac = NULL;
 	HMODULE pathcch = NULL;
 
 	if(!prefix && !path)
@@ -349,7 +214,7 @@ char* compat_catpath(const char *prefix, const char* path)
 	/* Again: I presume this whole fun is to get at PathAllocCombine
 	   even when pathcch.h is not available (like in MinGW32). */
 	if( (pathcch = GetModuleHandleA("kernelbase")) )
-		mypac = (void *)GetProcAddress(pathcch, "PathAllocCombine");
+		mypac = (PCA_ptr) GetProcAddress(pathcch, "PathAllocCombine");
 	if(mypac) /* PATHCCH_ALLOW_LONG_PATH = 1 per API docs */
 	{
 		debug("Actually calling PathAllocCombine!");
@@ -392,7 +257,7 @@ catpath_end:
 	return ret;
 }
 
-int compat_isdir(const char *path)
+int INT123_compat_isdir(const char *path)
 {
 	int ret = 0;
 #ifdef WANT_WIN32_UNICODE
@@ -428,7 +293,7 @@ struct compat_dir
 #endif
 };
 
-struct compat_dir* compat_diropen(char *path)
+struct compat_dir* INT123_compat_diropen(char *path)
 {
 	struct compat_dir *cd;
 	if(!path)
@@ -441,7 +306,7 @@ struct compat_dir* compat_diropen(char *path)
 	{
 		char *pattern;
 		wchar_t *wpattern;
-		pattern = compat_catpath(path, "*");
+		pattern = INT123_compat_catpath(path, "*");
 		wpattern = u2wlongpath(pattern);
 		if(wpattern)
 		{
@@ -468,17 +333,17 @@ struct compat_dir* compat_diropen(char *path)
 #endif
 	if(cd)
 	{
-		cd->path = compat_strdup(path);
+		cd->path = INT123_compat_strdup(path);
 		if(!cd->path)
 		{
-			compat_dirclose(cd);
+			INT123_compat_dirclose(cd);
 			cd = NULL;
 		}
 	}
 	return cd;
 }
 
-void compat_dirclose(struct compat_dir *cd)
+void INT123_compat_dirclose(struct compat_dir *cd)
 {
 	if(cd)
 	{
@@ -492,7 +357,7 @@ void compat_dirclose(struct compat_dir *cd)
 	}
 }
 
-char* compat_nextfile(struct compat_dir *cd)
+char* INT123_compat_nextfile(struct compat_dir *cd)
 {
 	if(!cd)
 		return NULL;
@@ -503,7 +368,7 @@ char* compat_nextfile(struct compat_dir *cd)
 		if(!(cd->d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
 		{
 			char *ret;
-			win32_wide_utf8(cd->d.cFileName, &ret, NULL);
+			INT123_win32_wide_utf8(cd->d.cFileName, &ret, NULL);
 			return ret;
 		}
 	}
@@ -513,11 +378,11 @@ char* compat_nextfile(struct compat_dir *cd)
 		while((dp = readdir(cd->dir)))
 		{
 			struct stat fst;
-			char *fullpath = compat_catpath(cd->path, dp->d_name);
+			char *fullpath = INT123_compat_catpath(cd->path, dp->d_name);
 			if(fullpath && !stat(fullpath, &fst) && S_ISREG(fst.st_mode))
 			{
 				free(fullpath);
-				return compat_strdup(dp->d_name);
+				return INT123_compat_strdup(dp->d_name);
 			}
 			free(fullpath);
 		}
@@ -526,7 +391,7 @@ char* compat_nextfile(struct compat_dir *cd)
 	return NULL;
 }
 
-char* compat_nextdir(struct compat_dir *cd)
+char* INT123_compat_nextdir(struct compat_dir *cd)
 {
 	if(!cd)
 		return NULL;
@@ -537,7 +402,7 @@ char* compat_nextdir(struct compat_dir *cd)
 		if(cd->d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
 		{
 			char *ret;
-			win32_wide_utf8(cd->d.cFileName, &ret, NULL);
+			INT123_win32_wide_utf8(cd->d.cFileName, &ret, NULL);
 			return ret;
 		}
 	}
@@ -547,11 +412,11 @@ char* compat_nextdir(struct compat_dir *cd)
 		while((dp = readdir(cd->dir)))
 		{
 			struct stat fst;
-			char *fullpath = compat_catpath(cd->path, dp->d_name);
+			char *fullpath = INT123_compat_catpath(cd->path, dp->d_name);
 			if(fullpath && !stat(fullpath, &fst) && S_ISDIR(fst.st_mode))
 			{
 				free(fullpath);
-				return compat_strdup(dp->d_name);
+				return INT123_compat_strdup(dp->d_name);
 			}
 			free(fullpath);
 		}
@@ -562,89 +427,93 @@ char* compat_nextdir(struct compat_dir *cd)
 
 #endif
 
-#ifdef USE_MODULES
-/*
-	This is what I expected the platform-specific dance for dynamic module
-	support to be. Little did I know about the peculiarities of (long)
-	paths and directory/file search on Windows.
-*/
+// Revisit logic of write():
+// Return -1 if interrupted before any data was written,
+// set errno to EINTR. Any other error value is serious
+// for blocking I/O, which we assume here. EAGAIN should be
+// handed through.
+// Reaction to zero-sized write attempts could also be funky, so avoid that.
+// May return short count for various reasons. I assume that
+// any serious condition will show itself as return value -1
+// eventually.
 
-void *compat_dlopen(const char *path)
-{
-	void *handle = NULL;
-#ifdef WANT_WIN32_UNICODE
-	wchar_t *wpath;
-	wpath = u2wlongpath(path);
-	if(wpath)
-		handle = LoadLibraryW(wpath);
-	free(wpath);
-#else
-	handle = dlopen(path, RTLD_NOW);
-#endif
-	return handle;
-}
+// These uninterruptible write/read functions shall persist as long as
+// possible to finish the desired operation. A short byte count is short
+// because of a serious reason (maybe EOF, maybe out of disk space). You
+// can inspect errno.
 
-void *compat_dlsym(void *handle, const char *name)
-{
-	void *sym = NULL;
-	if(!handle)
-		return NULL;
-#ifdef WANT_WIN32_UNICODE
-	sym = GetProcAddress(handle, name);
-#else
-	sym = dlsym(handle, name);
-#endif
-	return sym;
-}
-
-void compat_dlclose(void *handle)
-{
-	if(!handle)
-		return;
-#ifdef WANT_WIN32_UNICODE
-	FreeLibrary(handle);
-#else
-	dlclose(handle);
-#endif
-}
-
-#endif /* USE_MODULES */
-
-
-/* This shall survive signals and any return value less than given byte count
-   is an error */
-size_t unintr_write(int fd, void const *buffer, size_t bytes)
+size_t INT123_unintr_write(int fd, void const *buffer, size_t bytes)
 {
 	size_t written = 0;
+	errno = 0;
 	while(bytes)
 	{
-		ssize_t part = write(fd, (char*)buffer+written, bytes);
-		if(part < 0 && errno != EINTR)
+		errno = 0;
+		ptrdiff_t part = write(fd, (char*)buffer+written, bytes);
+		// Just on short writes, we do not abort. Only when
+		// there was no successful operation (even zero write) at all.
+		// Any other error than EINTR ends things here.
+		if(part >= 0)
+		{
+			bytes   -= part;
+			written += part;
+		} else if(errno != EINTR && errno != EAGAIN
+#if defined(EWOULDBLOCK) && (EWOULDBLOCK != EAGAIN)
+			// Not all platforms define it (or only in more modern POSIX modes).
+			// Standard says it is supposed to be a macro, so simple check here.
+			&& errno != EWOULDBLOCK
+#endif
+		)
 			break;
-		bytes   -= part;
-		written += part;
 	}
 	return written;
 }
 
 /* Same for reading the data. */
-size_t unintr_read(int fd, void *buffer, size_t bytes)
+size_t INT123_unintr_read(int fd, void *buffer, size_t bytes)
 {
 	size_t got = 0;
+	errno = 0;
 	while(bytes)
 	{
-		ssize_t part = read(fd, (char*)buffer+got, bytes);
-		if(part < 0 && errno != EINTR)
+		errno = 0;
+		ptrdiff_t part = read(fd, (char*)buffer+got, bytes);
+		if(part > 0) // == 0 is end of file
+		{
+			bytes -= part;
+			got   += part;
+		} else if(errno != EINTR && errno != EAGAIN
+#if defined(EWOULDBLOCK) && (EWOULDBLOCK != EAGAIN)
+			&& errno != EWOULDBLOCK
+#endif
+		)
 			break;
-		bytes -= part;
-		got   += part;
 	}
 	return got;
 }
 
+// and again for streams
+size_t INT123_unintr_fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream)
+{
+	size_t written = 0;
+	errno = 0;
+	while(size && nmemb)
+	{
+		errno = 0;
+		size_t part = fwrite((char*)ptr+written*size, size, nmemb, stream);
+		if(part > 0)
+		{
+			nmemb   -= part;
+			written += part;
+		} else if(errno != EINTR)
+			break;
+	}
+	return written;
+}
+
 #ifndef NO_CATCHSIGNAL
-#if (!defined(WIN32) || defined (__CYGWIN__)) && defined(HAVE_SIGNAL_H)
-void (*catchsignal(int signum, void(*handler)()))()
+#if (!defined(WIN32) || defined (__CYGWIN__)) && !defined(__PSP__) && defined(HAVE_SIGNAL_H)
+void (*INT123_catchsignal(int signum, void(*handler)(int)))(int)
 {
 	struct sigaction new_sa;
 	struct sigaction old_sa;
@@ -658,7 +527,7 @@ void (*catchsignal(int signum, void(*handler)()))()
 	sigemptyset(&new_sa.sa_mask);
 	new_sa.sa_flags = 0;
 	if(sigaction(signum, &new_sa, &old_sa) == -1)
-		return ((void (*)()) -1);
+		return ((void (*)(int)) -1); // Not rather NULL?
 	return (old_sa.sa_handler);
 }
 #endif

@@ -1,7 +1,7 @@
 /*
 	stringbuf: mimicking a bit of C++ to more safely handle strings
 
-	copyright 2006-17 by the mpg123 project
+	copyright 2006-20 by the mpg123 project
 	    - free software under the terms of the LGPL 2.1
 	see COPYING and AUTHORS files in distribution or http://mpg123.org
 	initially written by Thomas Orgis
@@ -10,9 +10,27 @@
 #include "mpg123lib_intern.h"
 #include "config.h"
 #include "mpg123.h"
-#include "compat.h"
+#include "../compat/compat.h"
 #include <string.h>
-#include "debug.h"
+#include "../common/debug.h"
+
+mpg123_string* attribute_align_arg mpg123_new_string(const char *val)
+{
+	mpg123_string *sb = malloc(sizeof(mpg123_string));
+	if(!sb)
+		return NULL;
+	mpg123_init_string(sb);
+	mpg123_set_string(sb, val);
+	return sb;
+}
+
+void attribute_align_arg mpg123_delete_string(mpg123_string* sb)
+{
+	if(!sb)
+		return;
+	mpg123_free_string(sb);
+	free(sb);
+}
 
 void attribute_align_arg mpg123_init_string(mpg123_string* sb)
 {
@@ -53,12 +71,18 @@ int attribute_align_arg mpg123_resize_string(mpg123_string* sb, size_t new)
 	{
 		char* t;
 		debug("really!");
-		t = (char*) safe_realloc(sb->p, new*sizeof(char));
-		debug1("safe_realloc returned %p", (void*) t); 
+		t = (char*) INT123_safe_reallocn(sb->p, new, sizeof(char));
+		debug1("INT123_safe_realloc returned %p", (void*) t); 
 		if(t != NULL)
 		{
 			sb->p = t;
 			sb->size = new;
+			if(sb->size < sb->fill)
+			{
+				// Cut short the existing data, properly.
+				sb->fill = sb->size;
+				sb->p[sb->fill-1] = 0;
+			}
 			return 1;
 		}
 		else return 0;
@@ -93,6 +117,19 @@ int attribute_align_arg mpg123_copy_string(mpg123_string* from, mpg123_string* t
 		return 1;
 	}
 	else return 0;
+}
+
+int attribute_align_arg mpg123_move_string(mpg123_string *from, mpg123_string *to)
+{
+	if(to)
+		mpg123_free_string(to);
+	else
+		mpg123_free_string(from);
+	if(from && to)
+		*to = *from;
+	if(from)
+		mpg123_init_string(from);
+	return (from && to) ? 1 : 0;
 }
 
 int attribute_align_arg mpg123_add_string(mpg123_string* sb, const char* stuff)
@@ -180,23 +217,30 @@ size_t attribute_align_arg mpg123_strlen(mpg123_string *sb, int utf8)
 
 int attribute_align_arg mpg123_chomp_string(mpg123_string *sb)
 {
-	ssize_t i;
 	if(!sb || !sb->fill) return 0;
 
 	/* Ensure that it is zero-terminated. */
-	sb->p[sb->fill-1] = 0;
-	for(i=sb->fill-2; i>=0; --i)
+	char *c = sb->p+sb->fill-1;
+	*c = 0;
+	for(; c >= sb->p; --c)
 	{
-		char *c = sb->p+i;
 		/* Stop at the first proper character. */
 		if(*c && *c != '\r' && *c != '\n') break;
 		else *c = 0;
 	}
-	/* initial fill at least 1, so i at least -1,
-	   +2 means nothing happened for fill=1 .
-	   With i=0, we got one non-null character, fill shall be 2
-	   to accomodate the trailing zero. */
-	sb->fill = (size_t)i+2;
+	// We at least got a trailing zero. 
+	sb->fill = (size_t)(c - sb->p + 1) + 1;
 
+	return 1;
+}
+
+int attribute_align_arg mpg123_same_string(mpg123_string *a, mpg123_string *b)
+{
+	if(!a || !b)
+		return 0;
+	if(a->fill != b->fill)
+		return 0;
+	if(memcmp(a->p, b->p, a->fill))
+		return 0;
 	return 1;
 }

@@ -3,21 +3,45 @@
 # A dirty script to create some windows binaries (shared, static, debug, ...) using the MSYS environment.
 
 # give build type as command line argument
-# x86 or x86_64-cross
+# x86, x86_64, x86-cross, x86_64-cross
 build_type=$1
-test -z "$build_type" && build_type=x86
+if test -z "$build_type"; then
+  echo "Please specify a build type as argument, one of:"
+  echo "x86, x86_64, x86-cross, x86_64-cross"
+  echo "Optionally set a number of parallel make processes as second argument."
+  echo "A third argument might override the list of output modules to build."
+  exit 1
+fi
+
+build_procs=$2
+# Could use parallel make with number of cores in system,
+# but it turns out we burn most time in configure with
+# slow forks anyway.
+#if test -z "$build_procs"; then
+#  build_procs=$(nproc 2>/dev/null)
+#fi
+
+# -D__MINGW_USE_VC2005_COMPAT=1 use 64bit time internally for 32bit, so XP and earlier don't get into
+# missing _time32 errors
+
+modules=${3:-win32_wasapi,win32}
 
 echo "build type: $build_type"
 case $build_type in
   x86)
     decoder=x86
     strip=strip
+    hostopt="CPPFLAGS=-D__MINGW_USE_VC2005_COMPAT=1"
+  ;;
+  x86_64)
+    decoder=x86-64
+    strip=strip
     hostopt=
   ;;
   x86-cross)
     decoder=x86
     strip=i686-w64-mingw32-strip
-    hostopt="--host=i686-w64-mingw32 --build=`./build/config.guess`"
+    hostopt="--host=i686-w64-mingw32 --build=`./build/config.guess` CPPFLAGS=-D__MINGW_USE_VC2005_COMPAT=1"
   ;;
   x86_64-cross)
     decoder=x86-64
@@ -34,11 +58,15 @@ temp="$PWD/tmp"
 final="$PWD/releases"
 txt="README COPYING NEWS"
 # let's try with modules
-opts="LDFLAGS=-static-libgcc"
-#opts="--with-audio=win32 --disable-modules"
+opts="--with-audio=$modules LDFLAGS=-static-libgcc"
 
-# Get the version for the build from configure.ac .
-version=`sed -n 's/^AC_INIT([^,]*, \[\([^,]*\)\], .*$/\1/p' < configure.ac`
+# Get the version for the build from version.h.
+major=$(grep '#define MPG123_MAJOR' src/version.h | cut -f 3 -d ' ')
+minor=$(grep '#define MPG123_MINOR' src/version.h | cut -f 3 -d ' ')
+patch=$(grep '#define MPG123_PATCH' src/version.h | cut -f 3 -d ' ')
+suffix=$(grep '#define MPG123_SUFFIX' src/version.h | cut -f 2 -d '"')
+version="$major.$minor.$patch$suffix"
+
 echo "Building binaries for version $version"
 
 prepare_dir()
@@ -50,7 +78,7 @@ prepare_unix2dos()
 {
 	echo "preparing unix2dos tool"
 	# I'll include documentation in DOS-style, with the help of this little unix2dos variant.
-	test -x "unix2dos" || echo "
+	test -x "unix2dos" || cat <<'EOT' > unix2dos.c && gcc -O -o unix2dos unix2dos.c
 #include <unistd.h>
 #include <stdio.h>
 int main()
@@ -66,13 +94,14 @@ int main()
 			if(buf[end] == '\n')
 			{
 				write(1, buf+pos, end-pos);
-				write(1, \"\r\n\", 2);
+				write(1, "\r\n", 2);
 				pos=end+1;
 			}
 		}
 		write(1, buf+pos, end-pos);
 	}
-}" > unix2dos.c && gcc -O -o unix2dos unix2dos.c
+}
+EOT
 }
 
 mpg123_build()
@@ -104,7 +133,7 @@ mpg123_build()
 	# it is an option.
 	./configure $hostopt \
 	  --prefix=$tmp $myopts --with-cpu=$cpu &&
-	make && make install &&
+	make -j${build_procs:-1} && make install &&
 	rm -rf "$final/$name" &&
 	mkdir  "$final/$name" &&
 	cp -v "$tmp/bin/"*.exe "$final/$name" &&
@@ -117,12 +146,15 @@ mpg123_build()
 		echo "No DLL there..."
 	else
 		cp -v "$tmp"/bin/lib*123*.dll "$tmp"/include/*123*.h "$final/$name" &&
-		cp -v src/lib*123/.libs/lib*123*.dll.def "$final/$name" &&
+		for f in src/lib*123/.libs/lib*123*.dll.def
+		do
+			cp -v "$f" "$final/$name/$(basename ${f%.dll.def}.def)"
+		done &&
 		if test "$debug" = y; then
 			echo "Not stripping the debug build..."
 		else
 			$strip --strip-unneeded "$final/$name/"*.dll || exit 1
-		fi
+		fi &&
 		for i in $tmp/lib/mpg123/*.dll
 		do
 			if test -e "$i"; then
@@ -136,7 +168,8 @@ mpg123_build()
 	do
 		echo "text file $i -> $final/$name/$i.txt"
 		./unix2dos < "$i" > "$final/$name/$i.txt"
-	done
+	done &&
+	cp doc/windows-notes.html "$final/$name/"
 }
 
 prepare_dir &&

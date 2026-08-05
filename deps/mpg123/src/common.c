@@ -1,7 +1,9 @@
 /*
 	common: misc stuff... audio flush, status display...
 
-	copyright ?-2015 by the mpg123 project - free software under the terms of the LGPL 2.1
+	copyright ?-2023 by the mpg123 project
+	free software under the terms of the LGPL 2.1
+
 	see COPYING and AUTHORS files in distribution or http://mpg123.org
 	initially written by Michael Hipp
 */
@@ -13,66 +15,17 @@
 #include "out123.h"
 #include <sys/stat.h>
 #include "common.h"
+#include "terms.h"
+#include "metaprint.h"
 
-#ifdef __EMX__
-/* Special ways for OS/2 EMX */
-#include <stdlib.h>
-#else
-/* POSIX stuff */
-#ifdef HAVE_TERMIOS
-#include <termios.h>
-#include <sys/ioctl.h>
-#endif
-#endif
+#include "common/debug.h"
 
-#include "debug.h"
-
-int stopped = 0;
-int paused = 0;
-static int term_is_fun = -1;
-
-int term_have_fun(int fd)
-{
-	if(term_is_fun > -1)
-		return term_is_fun;
-	else
-		term_is_fun = 0;
-#ifdef HAVE_TERMIOS
-	if(term_width(fd) > 0 && param.term_visual)
-	{
-		/* Only play with non-dumb terminals. */
-		char *tname = compat_getenv("TERM");
-		if(tname)
-		{
-			if(strcmp(tname, "") && strcmp(tname, "dumb"))
-				term_is_fun = 1;
-			free(tname);
-		}
-	}
-#endif
-	return term_is_fun;
-}
-
-/* Also serves as a way to detect if we have an interactive terminal. */
-int term_width(int fd)
-{
-#ifdef __EMX__
-/* OS/2 */
-	int s[2];
-	_scrsize (s);
-	if (s[0] >= 0)
-		return s[0];
-#else
-#ifdef HAVE_TERMIOS
-/* POSIX */
-	struct winsize geometry;
-	geometry.ws_col = 0;
-	if(ioctl(fd, TIOCGWINSZ, &geometry) >= 0)
-		return (int)geometry.ws_col;
-#endif
-#endif
-	return -1;
-}
+enum player_state playstate = STATE_PLAYING;
+const char playsym[STATE_COUNT] = { '>', '_', '=', '?' };
+int muted = 0;
+// On LFS conversion trouble with large files, print_stat() gets disabled.
+// Some heuristic re-enables it (when you print headers).
+static int print_stat_disabled = FALSE;
 
 const char* rva_name[3] = { "off", "mix", "album" };
 static const char* rva_statname[3] = { "---", "mix", "alb" };
@@ -110,6 +63,7 @@ void print_remote_header(mpg123_handle *mh)
 		i.bitrate,
 		i.flags & MPG123_PRIVATE ? 1 : 0,
 		i.vbr);
+	print_stat_disabled=FALSE;
 }
 
 void print_header(mpg123_handle *mh)
@@ -139,6 +93,7 @@ void print_header(mpg123_handle *mh)
 		default: fprintf(stderr, "???");
 	}
 	fprintf(stderr, " Extension value: %d\n",	i.flags & MPG123_PRIVATE ? 1 : 0);
+	print_stat_disabled=FALSE;
 }
 
 void print_header_compact(mpg123_handle *mh)
@@ -161,6 +116,7 @@ void print_header_compact(mpg123_handle *mh)
 		default: fprintf(stderr, "???");
 	}
 	fprintf(stderr," %ld %s\n", i.rate, smodes[i.mode]);
+	print_stat_disabled=FALSE;
 }
 
 unsigned int roundui(double val)
@@ -209,32 +165,89 @@ void print_buf(const char* prefix, out123_handle *ao)
 	,	prefix, times[0], times[1], timesep, times[2] );
 }
 
+// This is a massively complicated function just for telling where we are.
+// Blame buffering. Blame format conversion. Blame the universe.
+int position_info( mpg123_handle *fr, off_t offset, out123_handle *ao
+,	off_t *frame, off_t *frame_remain
+,	double *seconds, double *seconds_remain, double *seconds_buffered, double *seconds_total )
+{
+	size_t buffered;
+	off_t decoded;
+	double elapsed;
+	double remain;
+	double length;
+	off_t frameo;
+	off_t frames;
+	off_t rframes;
+	int framesize;
+	int spf;
+	long inrate;
+	long rate;
+	if(mpg123_getformat(fr, &inrate, NULL, NULL) || inrate < 1)
+		return -1;
+	if(out123_getformat(ao, &rate, NULL, NULL, &framesize) || rate < 1 || framesize < 1)
+		return -1;
+	buffered = out123_buffered(ao)/framesize;
+	decoded  = mpg123_tell(fr);
+	length   = (double)mpg123_length(fr)/inrate;
+	frameo   = mpg123_tellframe(fr);
+	frames   = mpg123_framelength(fr);
+	spf      = mpg123_spf(fr);
+	if(decoded < 0 || length < 0 || frameo < 0 || frames <= 0 || spf <= 0)
+	{
+		merror("Failed to gather position data: %s", mpg123_strerror(fr));
+		return -1;
+	}
+	frameo += offset;
+	if(frameo < 0)
+		frameo = 0;
+	/* Some sensible logic around offsets and time.
+	   Buffering makes the relationships between the numbers non-trivial. */
+	rframes = frames-frameo;
+	// May be negative, a countdown. Buffer only confuses in paused (looping) mode, though.
+	elapsed = (double)(decoded + offset*spf)/inrate - (double)(playstate==STATE_LOOPING ? 0 : buffered)/rate;
+	remain  = elapsed > 0 ? length - elapsed : length;
+
+	if(frame)
+		*frame = frameo;
+	if(frame_remain)
+		*frame_remain = rframes;
+	if(seconds)
+		*seconds = elapsed;
+	if(seconds_remain)
+		*seconds_remain = remain;
+	if(seconds_buffered)
+		*seconds_buffered = (double)buffered/rate;
+	if(seconds_total)
+		*seconds_total = length;
+
+	return 0;
+}
 
 
 /* Note about position info with buffering:
    Negative positions mean that the previous track is still playing from the
    buffer. It's a countdown. The frame counter always relates to the last
    decoded frame, what entered the buffer right now. */
-void print_stat(mpg123_handle *fr, long offset, out123_handle *ao, int draw_bar)
+void print_stat(mpg123_handle *fr, long offset, out123_handle *ao, int draw_bar
+,	struct parameter *param)
 {
-	size_t buffered;
-	off_t decoded;
-	off_t elapsed;
-	off_t remain;
-	off_t length;
-	off_t frame;
-	off_t frames;
-	off_t rframes;
-	int spf;
+	if(print_stat_disabled)
+		return;
+	static int old_term_width = -1;
 	double basevol, realvol;
-	char *icy;
-	long rate;
-	int framesize;
+	double elapsed;
+	double remain;
+	double bufsec;
+	double length;
+	off_t frame;
+	off_t rframes;
 	struct mpg123_frameinfo mi;
 	char linebuf[256];
 	char *line = NULL;
 
-#ifndef WIN32
+#ifndef __OS2__
+#ifndef _WIN32
 #ifndef GENERIC
 /* Only generate new stat line when stderr is ready... don't overfill... */
 	{
@@ -251,25 +264,13 @@ void print_stat(mpg123_handle *fr, long offset, out123_handle *ao, int draw_bar)
 	}
 #endif
 #endif
-	if(out123_getformat(ao, &rate, NULL, NULL, &framesize))
+#endif
+	if(position_info(fr, offset, ao, &frame, &rframes, &elapsed, &remain, &bufsec, &length))
+	{
+		debug("position_info() failed");
+		print_stat_disabled=TRUE;
 		return;
-	buffered = out123_buffered(ao)/framesize;
-	decoded  = mpg123_tell(fr);
-	length   = mpg123_length(fr);
-	frame    = mpg123_tellframe(fr);
-	frames   = mpg123_framelength(fr);
-	spf      = mpg123_spf(fr);
-	if(decoded < 0 || length < 0 || frame < 0 || frames <= 0 || spf <= 0)
-		return;
-	/* Apply offset. */
-	frame += offset;
-	if(frame < 0)
-		frame = 0;
-	/* Some sensible logic around offsets and time.
-	   Buffering makes the relationships between the numbers non-trivial. */
-	rframes = frames-frame;
-	elapsed = decoded + offset*spf - buffered; /* May be negative, a countdown. */
-	remain  = elapsed > 0 ? length - elapsed : length;
+	}
 	if(  MPG123_OK == mpg123_info(fr, &mi)
 	  && MPG123_OK == mpg123_getvolume(fr, &basevol, &realvol, NULL) )
 	{
@@ -288,14 +289,30 @@ void print_stat(mpg123_handle *fr, long offset, out123_handle *ao, int draw_bar)
 		/* 255 is enough for the data I prepare, if there is no terminal width to
 		   fill */
 		maxlen  = term_width(STDERR_FILENO);
+		if(draw_bar && maxlen > 0 && maxlen < old_term_width)
+		{
+			// Hack about draw_bar: That's the normal print_stat that is not followed by
+			// metadata anyway. No need to double things.
+			print_stat(fr, offset, ao, 0, param);
+			if(param->verbose > 2)
+				fprintf(stderr,"Note: readjusting for smaller terminal (%d to %d)\n", old_term_width, maxlen);
+			fprintf(stderr, "\n\n\n");
+			if(param->verbose > 1)
+				print_header(fr);
+			else
+				print_header_compact(fr);
+			print_id3_tag(fr, param->long_id3, stderr, maxlen);
+		}
+		if(draw_bar)
+			old_term_width = maxlen;
 		linelen = maxlen > 0 ? maxlen : (sizeof(linebuf)-1);
 		line = linelen >= sizeof(linebuf)
 		?	malloc(linelen+1) /* Only malloc if it is a really long line. */
 		:	linebuf; /* Small buffer on stack is enough. */
 
-		tim[0] = (double)elapsed/rate;
-		tim[1] = (double)remain/rate;
-		tim[2] = (double)buffered/rate;
+		tim[0] = elapsed;
+		tim[1] = remain;
+		tim[2] = bufsec;
 		for(ti=0; ti<3; ++ti)
 		{
 			if(tim[ti] < 0.){ sign[ti] = '-'; tim[ti] = -tim[ti]; }
@@ -303,19 +320,19 @@ void print_stat(mpg123_handle *fr, long offset, out123_handle *ao, int draw_bar)
 		}
 		/* Taking pains to properly size the frame number fields. */
 		len = snprintf( framefmt, sizeof(framefmt)
-		,	"%%0%d"OFF_P, (int)log10(frames)+1 );
+		,	"%%0%d" PRIiMAX, (int)log10(frame+rframes)+1 );
 		if(len < 0 || len >= sizeof(framefmt))
-			memcpy(framefmt, "%05"OFF_P, sizeof("%05"OFF_P));
-		snprintf( framestr[0], sizeof(framestr[0])-1, framefmt, (off_p)frame);
+			memcpy(framefmt, "%05" PRIiMAX, sizeof("%05" PRIiMAX));
+		snprintf( framestr[0], sizeof(framestr[0])-1, framefmt, (intmax_t)frame);
 		framestr[0][sizeof(framestr[0])-1] = 0;
-		snprintf( framestr[1], sizeof(framestr[1])-1, framefmt, (off_p)rframes);
+		snprintf( framestr[1], sizeof(framestr[1])-1, framefmt, (intmax_t)rframes);
 		framestr[1][sizeof(framestr[1])-1] = 0;
 		/* Now start with the state line. */
 		memset(line, 0, linelen+1); /* Always one zero more. */
 		/* Start with position info. */
 		len = snprintf( line, linelen
 		,	"%c %s+%s %c%02lu:%02lu%c%02lu+%02lu:%02lu%c%02lu"
-		,	stopped ? '_' : (paused ? '=' : '>')
+		,	playsym[playstate]
 		,	framestr[0], framestr[1]
 		,	sign[0]
 		,	times[0][0], times[0][1], timesep[0], times[0][2]
@@ -324,7 +341,7 @@ void print_stat(mpg123_handle *fr, long offset, out123_handle *ao, int draw_bar)
 		/* Just cut it. */
 		if(len >= linelen)
 			len=linelen;
-		if(len >= 0 && param.usebuffer && len < linelen )
+		if(len >= 0 && param->usebuffer && len < linelen )
 		{ /* Buffer info. */
 			int len_add = snprintf( line+len, linelen-len
 			,	" [%02lu:%02lu%c%02lu]"
@@ -335,9 +352,10 @@ void print_stat(mpg123_handle *fr, long offset, out123_handle *ao, int draw_bar)
 		if(len >= 0 && len < linelen)
 		{ /* Volume info. */
 			int len_add = snprintf( line+len, linelen-len
-			,	" %s %03u=%03u"
-			,	rva_statname[param.rva], roundui(basevol*100), roundui(realvol*100)
-			);
+			,	" %s %03u%c%03u"
+			,	rva_statname[param->rva]
+			,	roundui(basevol*100), muted ? 'm' : '=' 
+			,	roundui(realvol*100) );
 			if(len_add > 0)
 				len += len_add;
 		}
@@ -379,7 +397,7 @@ void print_stat(mpg123_handle *fr, long offset, out123_handle *ao, int draw_bar)
 		{ /* Size of frame in bytes. */
 			int len_add = 0;
 			len_add = snprintf( line+len, linelen-len
-			,	" p%+.3f", param.pitch );
+			,	" p%+.3f", param->pitch );
 			if(len_add > 0)
 				len += len_add;
 		}
@@ -404,8 +422,7 @@ void print_stat(mpg123_handle *fr, long offset, out123_handle *ao, int draw_bar)
 			   Shouldn't we always fill to maxlen? */
 			if(maxlen > 0)
 				memset(line+len, ' ', linelen-len);
-#ifdef HAVE_TERMIOS
-			draw_bar = draw_bar && term_have_fun(STDERR_FILENO);
+			draw_bar = draw_bar && term_have_fun(STDERR_FILENO,param->term_visual);
 			/* Use inverse color to draw a progress bar. */
 			if(maxlen > 0 && draw_bar)
 			{
@@ -427,22 +444,14 @@ void print_stat(mpg123_handle *fr, long offset, out123_handle *ao, int draw_bar)
 				fprintf(stderr, "%s", line+barlen);
 			}
 			else
-#endif
 			fprintf(stderr, "\r%s", line);
 		}
-	}
-	/* Check for changed tags here too? */
-	if( mpg123_meta_check(fr) & MPG123_NEW_ICY && MPG123_OK == mpg123_icy(fr, &icy) )
-	{
-		if(line) /* Clear the inverse video. */
-			fprintf(stderr, "\r%s", line);
-		fprintf(stderr, "\nICY-META: %s\n", icy);
 	}
 	if(line && line != linebuf)
 		free(line);
 }
 
-void clear_stat()
+void clear_stat(void)
 {
 	int len = term_width(STDERR_FILENO);
 	if(len > 0)

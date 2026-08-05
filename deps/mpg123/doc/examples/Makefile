@@ -1,8 +1,8 @@
 targets = \
-  mpg123_test \
   feedseek \
   mpg123_to_out123 \
   mpg123_to_wav_replaced_io \
+  mpg123_to_wav_reader64 \
   scan \
   id3dump \
   mpglib \
@@ -27,6 +27,10 @@ else # Yeah, that's with GNU/Linux in mind, at least GNU ld ...
   OUT123_LDFLAGS := -L$(MPG123_PREFIX)/lib -Wl,-rpath $(MPG123_PREFIX)/lib -lout123
 endif
 
+# Define to any C99 compiler.
+CC = cc -std=c99
+CFLAGS = -O
+
 # Oder of libs not that important here...
 compile = $(CC) $(CPPFLAGS) $(CFLAGS) $(MPG123_CFLAGS)
 linkflags = $(MPG123_LDFLAGS) $(LDFLAGS)
@@ -37,8 +41,11 @@ mpg123_to_out123: mpg123_to_out123.c
 mpg123_to_wav_replaced_io: mpg123_to_wav_replaced_io.c
 	$(compile) -o $@ $< $(OUT123_CFLAGS) $(OUT123_LDFLAGS) $(linkflags)
 
+mpg123_to_wav_reader64: mpg123_to_wav_reader64.c
+	$(compile) -o $@ $< $(OUT123_CFLAGS) $(OUT123_LDFLAGS) $(linkflags)
+
 feedseek: feedseek.c
-	$(compile) -o feedseek feedseek.c $(linkflags)
+	$(compile) -o feedseek feedseek.c $(OUT123_CFLAGS) $(OUT123_LDFLAGS) $(linkflags)
 
 scan: scan.c
 	$(compile) -o scan scan.c $(linkflags)
@@ -51,9 +58,6 @@ dump_seekindex: dump_seekindex.c
 
 mpglib: mpglib.c
 	$(compile) -o mpglib mpglib.c $(linkflags)
-
-mpg123_test: mpg123_test.c
-	$(compile) -o $@ $< $(linkflags)
 
 extract_frames: extract_frames.c
 	$(compile) -o $@ $< $(linkflags)
