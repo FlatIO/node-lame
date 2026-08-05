@@ -20,18 +20,19 @@ describe('Decoder', function () {
 
     it('should emit "readable" events', function (done) {
       var file = fs.createReadStream(filename);
-      var output = fs.createWriteStream(outputName);
       var count = 0;
       var decoder = new lame.Decoder();
       decoder.on('readable', function () {
-        count++;
+        var chunk;
+        while ((chunk = decoder.read()) !== null) {
+          count++;
+        }
       });
       decoder.on('finish', function () {
         assert(count > 0);
-        fs.unlinkSync(outputName);
         done();
       });
-      file.pipe(decoder).pipe(output);
+      file.pipe(decoder);
     });
 
     it('should emit a single "format" event', function (done) {
