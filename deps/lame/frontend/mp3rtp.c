@@ -22,7 +22,7 @@
  * Boston, MA 02111-1307, USA.
  */
 
-/* $Id: mp3rtp.c,v 1.36 2011/10/02 17:13:22 robert Exp $ */
+/* $Id$ */
 
 /* Still under work ..., need a client for test, where can I get one? */
 
@@ -55,6 +55,13 @@
 # include <unistd.h>
 #endif
 
+#ifdef IPV6
+#include <netinet/in.h>
+# ifndef INET6_ADDRSTRLEN
+#  define INET6_ADDRSTRLEN     46
+# endif /* INET6_ADDRSTRLEN */
+#endif
+
 #include "lame.h"
 #include "main.h"
 #include "parse.h"
@@ -73,11 +80,14 @@
  *
  * Author: Felix von Leitner <leitner@vim.org>
  *
- *   mp3rtp ip[:port[:ttl]] [lame encoding options] infile outfile
+ *   mp3rtp ip [port[:ttl]] [lame encoding options] infile outfile
  *
  * examples:
- *   arecord -b 16 -s 22050 -w | ./mp3rtp 224.17.23.42:5004:2 -b 56 - /dev/null
+ *   arecord -b 16 -s 22050 -w | ./mp3rtp 224.17.23.42 5004:2 -b 56 - /dev/null
  *   arecord -b 16 -s 44100 -w | ./mp3rtp 10.1.1.42 -V2 -b128 -B256 - my_mp3file.mp3
+ * If ipv6 is enabled :   
+ *   arecord -b 16 -s 44100 -w | ./mp3rtp ff00::8 -V2 -b128 -B256 - my_mp3file.mp3
+ *   arecord -b 16 -s 44100 -w | ./mp3rtp ff00::8 5004:2 -V2 -b128 -B256 - my_mp3file.mp3
  *
  */
 
@@ -140,36 +150,59 @@ lame_main(lame_t gf, int argc, char **argv)
     int     wavsamples;
     int     mp3bytes;
     FILE   *outf;
-
+#ifdef IPV6
+    char    ip[INET6_ADDRSTRLEN];
+#else
     char    ip[16];
+#endif    
     unsigned int port = 5004;
     unsigned int ttl = 2;
     char    dummy;
+    int     arg = 0;
 
     if (argc <= 2) {
         console_printf("Encode (via LAME) to mp3 with RTP streaming of the output\n"
                        "\n"
-                       "    mp3rtp ip[:port[:ttl]] [lame encoding options] infile outfile\n"
+                       "    mp3rtp ip [port[:ttl]] [lame encoding options] infile outfile\n"
                        "\n"
                        "    examples:\n"
-                       "      arecord -b 16 -s 22050 -w | ./mp3rtp 224.17.23.42:5004:2 -b 56 - /dev/null\n"
+                       "      arecord -b 16 -s 22050 -w | ./mp3rtp 224.17.23.42 5004:2 -b 56 - /dev/null\n"
                        "      arecord -b 16 -s 44100 -w | ./mp3rtp 10.1.1.42 -V2 -b128 -B256 - my_mp3file.mp3\n"
+                       "    If ipv6 is enabled : \n"
+                       "      arecord -b 16 -s 44100 -w | ./mp3rtp ff00::8 -b 56 - /dev/null\n"
+                       "      arecord -b 16 -s 44100 -w | ./mp3rtp ff00::8 5004:2 -b 56 - /dev/null\n"
                        "\n");
         return 1;
     }
 
-    switch (sscanf(argv[1], "%11[.0-9]:%u:%u%c", ip, &port, &ttl, &dummy)) {
-    case 1:
-    case 2:
-    case 3:
-        break;
-    default:
-        error_printf("Illegal destination selector '%s', must be ip[:port[:ttl]]\n", argv[1]);
+#ifdef IPV6
+    if((sscanf(argv[1],"%45[.:0-9a-fA-F]", ip)) == 1)
+#else
+    if((sscanf(argv[1],"%11[.0-9]", ip)) == 1)
+#endif
+    {
+        switch(sscanf(argv[2],"%u:%u%c", &port, &ttl, &dummy)){
+        case 1:
+        case 2:
+            arg = 1;
+            break;
+        case 3:
+            error_printf("Illegal destination selector '%s', must be ip [port[:ttl]]\n", argv[1]);
+            return -1;
+        default:
+            arg = 0;
+        }
+    }
+    else
+    {
+        error_printf("Illegal destination selector '%s', must be ip [port[:ttl]]\n", argv[1]);
         return -1;
     }
+
     rtp_initialization();
     if (rtp_socket(ip, port, ttl)) {
         rtp_deinitialization();
+        fclose(outf);
         error_printf("fatal error during initialization\n");
         return 1;
     }
@@ -185,9 +218,17 @@ lame_main(lame_t gf, int argc, char **argv)
      * skip this call and set the values of interest in the gf struct.  
      * (see lame.h for documentation about these parameters)
      */
-
-    argv[1] = argv[0];
-    parse_args(gf, argc - 1, argv + 1, inPath, outPath, NULL, NULL);
+    {
+        int     i;
+        int     argc_mod = argc-arg-1; /* leaving out one or two arguments */
+        char**  argv_mod = calloc(argc_mod, sizeof(char*));
+        argv_mod[0] = argv[0];
+        for (i = 2+arg; i < argc; ++i) { /* leaving out argument number 1, parsed above */
+            argv_mod[i-arg-1] = argv[i];
+        }
+        parse_args(gf, argc_mod, argv_mod, inPath, outPath, NULL, NULL);
+        free(argv_mod);
+    }
 
     /* open the output file.  Filename parsed into gf.inPath */
     if (0 == strcmp(outPath, "-")) {
@@ -209,6 +250,8 @@ lame_main(lame_t gf, int argc, char **argv)
      * these values yourself.  
      */
     if (init_infile(gf, inPath) < 0) {
+        rtp_deinitialization();
+        fclose(outf);
         error_printf("Can't init infile '%s'\n", inPath);
         return 1;
     }
@@ -222,6 +265,8 @@ lame_main(lame_t gf, int argc, char **argv)
         if (ret == -1)
             display_bitrates(stderr);
         rtp_deinitialization();
+        fclose(outf);
+        close_infile();
         error_printf("fatal error during initialization\n");
         return -1;
     }

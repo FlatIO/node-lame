@@ -22,7 +22,7 @@
  
 /*!
 	\author Steve Lhomme
-	\version \$Id: ACMStream.cpp,v 1.12 2007/12/26 22:04:08 robert Exp $
+	\version \$Id$
 */
 
 #if !defined(STRICT)

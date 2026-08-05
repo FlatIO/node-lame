@@ -22,7 +22,7 @@
  
 /*!
 	\author Steve Lhomme
-	\version \$Id: AEncodeProperties.h,v 1.5 2002/04/07 13:31:35 robux4 Exp $
+	\version \$Id$
 */
 
 #if !defined(_AENCODEPROPERTIES_H__INCLUDED_)

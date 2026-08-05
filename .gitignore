@@ -7,3 +7,9 @@ build
 /*.wav
 /*.mp3
 /*.f32le
+/.idea/.gitignore
+/.idea/encodings.xml
+/.idea/misc.xml
+/.idea/modules.xml
+/.idea/node-lame.iml
+/.idea/vcs.xml

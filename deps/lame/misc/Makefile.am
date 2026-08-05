@@ -1,4 +1,4 @@
-## $Id: Makefile.am,v 1.11 2011/11/05 16:32:13 robert Exp $
+## $Id$
 
 include $(top_srcdir)/Makefile.am.global
 

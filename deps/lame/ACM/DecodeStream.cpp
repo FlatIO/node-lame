@@ -22,7 +22,7 @@
  
 /*!
 	\author Steve Lhomme
-	\version \$Id: DecodeStream.cpp,v 1.3 2002/01/25 17:51:42 robux4 Exp $
+	\version \$Id$
 */
 
 #if !defined(STRICT)

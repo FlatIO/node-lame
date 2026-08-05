@@ -22,7 +22,7 @@
  
 /*!
 	\author Steve Lhomme
-	\version \$Id: adebug.h,v 1.2 2002/01/22 19:45:02 robux4 Exp $
+	\version \$Id$
 */
 
 #if !defined(_DEBUG_H__INCLUDED_)

@@ -20,7 +20,7 @@
  * Boston, MA 02111-1307, USA.
  */
 
-/* $Id: timestatus.c,v 1.60 2011/05/07 16:05:17 rbrito Exp $ */
+/* $Id$ */
 
 #ifdef HAVE_CONFIG_H
 # include <config.h>
@@ -216,17 +216,18 @@ encoder_progress_begin( lame_global_flags const* gf
     global_encoder_progress.last_time = 0;
     global_encoder_progress.last_frame_num = 0;
     if (global_ui_config.silent < 9) {
+        size_t pw = console_getwidth()-14;
         char* i_file = 0;
         char* o_file = 0;
 #if defined( _WIN32 ) && !defined(__MINGW32__)
-        inPath = i_file = utf8ToLocal8Bit(inPath);
+        inPath = i_file = utf8ToConsole8Bit(inPath);
         outPath = o_file = utf8ToConsole8Bit(outPath);
 #endif
         lame_print_config(gf); /* print useful information about options being used */
 
         console_printf("Encoding %s%s to %s\n",
                        strcmp(inPath, "-") ? inPath : "<stdin>",
-                       strlen(inPath) + strlen(outPath) < 66 ? "" : "\n     ",
+                       strlen(inPath) + strlen(outPath) < pw ? "" : "\n     ",
                        strcmp(outPath, "-") ? outPath : "<stdout>");
 
         free(i_file);
@@ -417,8 +418,8 @@ decoder_progress(DecoderProgress dp, const mp3data_struct * mp3data, int iread)
         int     curr = mp3data->mode_ext;
         int     last = dp->last_mode_ext;
         console_printf("  %s  %c",
-                       curr & 2 ? last & 2 ? " MS " : "LMSR" : last & 2 ? "LMSR" : "L  R",
-                       curr & 1 ? last & 1 ? 'I' : 'i' : last & 1 ? 'i' : ' ');
+                       (curr & 2) ? (last & 2) ? " MS " : "LMSR" : (last & 2) ? "LMSR" : "L  R",
+                       (curr & 1) ? (last & 1) ? 'I' : 'i' : (last & 1) ? 'i' : ' ');
         dp->last_mode_ext = curr;
     }
     else {

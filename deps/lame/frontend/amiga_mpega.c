@@ -5,7 +5,7 @@
  *
  */
 
-/* $Id: amiga_mpega.c,v 1.3 2005/11/01 13:01:56 robert Exp $ */
+/* $Id$ */
 
 #ifdef HAVE_CONFIG_H
 #include <config.h>

@@ -247,9 +247,11 @@ lame_encode_buffer_ieee_float	@169
 lame_encode_buffer_interleaved_ieee_float	@170
 lame_encode_buffer_ieee_double	@171
 lame_encode_buffer_interleaved_ieee_double	@172
+lame_encode_buffer_interleaved_int	@173
 
 lame_get_bitrate	@502
 lame_get_samplerate	@503
+lame_get_maximum_number_of_samples	@504
 
 lame_decode_init	@1000
 lame_decode		@1001
@@ -269,6 +271,7 @@ hip_decode1_headersB	@1106
 hip_set_debugf	@1107
 hip_set_errorf	@1108
 hip_set_msgf	@1109
+hip_decode_init_gapless	@1110
 
 id3tag_genre_list	@2000
 id3tag_init   		@2001
@@ -290,10 +293,16 @@ lame_get_id3v1_tag	@2016
 lame_get_id3v2_tag	@2017
 lame_set_write_id3tag_automatic	@2018
 lame_get_write_id3tag_automatic	@2019
-id3tag_set_pad	@2020
+id3tag_set_pad		@2020
 id3tag_set_comment_ucs2	@2021
-id3tag_set_textinfo_ucs2 @2022
+id3tag_set_textinfo_ucs2	@2022
 id3tag_set_fieldvalue_ucs2	@2023
 id3tag_set_comment_utf16	@2024
-id3tag_set_textinfo_utf16 @2025
+id3tag_set_textinfo_utf16	@2025
 id3tag_set_fieldvalue_utf16	@2026
+id3tag_set_comment_utf8		@2027
+id3tag_set_textinfo_utf8	@2028
+
+; two external functions for ID3v2.4 tag support
+id3tag_add_v2_4_UTF8 @2029
+id3tag_v2_4_UTF8_only @2030

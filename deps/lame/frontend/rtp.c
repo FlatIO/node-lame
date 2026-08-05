@@ -22,7 +22,7 @@
  * Boston, MA 02111-1307, USA.
  */
 
-/* $Id: rtp.c,v 1.24 2011/05/07 16:05:17 rbrito Exp $ */
+/* $Id$ */
 
 #ifdef HAVE_CONFIG_H
 # include <config.h>
@@ -86,6 +86,11 @@ struct rtpheader {           /* in network byte order */
 #include "rtp.h"
 #include "console.h"
 
+#ifdef IPV6
+# include <netdb.h>
+# define MAX_PORT_LENGTH 6
+#endif
+
 typedef int SOCKET;
 
 struct rtpheader RTPheader;
@@ -97,15 +102,46 @@ int
 rtp_socket(char const *address, unsigned int port, unsigned int TTL)
 {
     int     iRet, iLoop = 1;
+    int     iSocket = -1;
+#ifdef IPV6
+    char    cPortStr[MAX_PORT_LENGTH];
+    struct  addrinfo hint, *multicastAddr = NULL;    
+    int     iTtl = TTL;
+    unsigned int  iMulticastLoop = 0;    
+#else
     struct sockaddr_in sin;
     unsigned char cTtl = TTL;
     char    cLoop = 0;
     unsigned int tempaddr;
+#endif  
 
-    int     iSocket = socket(AF_INET, SOCK_DGRAM, 0);
+    if(port == 0 || port > 0xffff){
+        error_printf("rtp_socket() Invalid port number.\n");
+        goto err_cleanup;
+    }
+
+#ifdef IPV6
+    snprintf(cPortStr,MAX_PORT_LENGTH,"%d",port);
+    memset(&hint, 0, sizeof(hint));
+    hint.ai_family = AF_UNSPEC;
+    hint.ai_socktype = SOCK_DGRAM;
+    iRet = getaddrinfo(address, cPortStr, &hint, &multicastAddr);
+    if (iRet){
+        error_printf("getaddrinfo() failed.\n");
+        goto err_cleanup; 	
+    }
+
+    iSocket = socket(multicastAddr->ai_family, multicastAddr->ai_socktype, 0);
     if (iSocket < 0) {
         error_printf("socket() failed.\n");
-        return 1;
+        goto err_cleanup;
+    }
+
+#else
+    iSocket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (iSocket < 0) {
+        error_printf("socket() failed.\n");
+        goto err_cleanup;
     }
 
     memset(&sin, 0, sizeof(sin));
@@ -113,37 +149,86 @@ rtp_socket(char const *address, unsigned int port, unsigned int TTL)
     sin.sin_family = AF_INET;
     sin.sin_port = htons(port);
     sin.sin_addr.s_addr = tempaddr;
+#endif
 
     iRet = setsockopt(iSocket, SOL_SOCKET, SO_REUSEADDR, &iLoop, sizeof(int));
     if (iRet < 0) {
         error_printf("setsockopt SO_REUSEADDR failed\n");
-        return 1;
+        close(iSocket);
+        goto err_cleanup;
     }
 
+#ifdef IPV6
+    if(((multicastAddr->ai_family == PF_INET6)
+                ?(((struct sockaddr_in6*)multicastAddr->ai_addr)->sin6_addr.s6_addr[0] == 0xFF)
+                :(((unsigned)ntohl(((struct sockaddr_in*)multicastAddr->ai_addr)->sin_addr.s_addr)) >> 28 == 0xE)))
+    {
+        /* only set multicast parameters for multicast destination IPs */
+        iRet = setsockopt(iSocket,
+                multicastAddr->ai_family == PF_INET6 ? IPPROTO_IPV6        : IPPROTO_IP,
+                multicastAddr->ai_family == PF_INET6 ? IPV6_MULTICAST_HOPS : IP_MULTICAST_TTL,
+                (char*) &iTtl, sizeof(iTtl));
+
+        if (iRet < 0) {
+            error_printf("setsockopt IPV6_MULTICAST_HOPS failed.  multicast in kernel?\n");
+            goto err_cleanup;
+        }
+
+        iMulticastLoop = 1;
+        iRet = setsockopt(iSocket,
+                multicastAddr->ai_family == PF_INET6 ? IPPROTO_IPV6        : IPPROTO_IP,
+                multicastAddr->ai_family == PF_INET6 ? IPV6_MULTICAST_LOOP : IP_MULTICAST_LOOP,
+                (char*) &iMulticastLoop, sizeof(iMulticastLoop));
+
+        if (iRet < 0) {
+            error_printf("setsockopt IPV6_MULTICAST_LOOP failed.  multicast in kernel?\n");
+            goto err_cleanup;
+        }
+    }
+    iRet = connect(iSocket, multicastAddr->ai_addr, multicastAddr->ai_addrlen);
+    if (iRet < 0) {
+        error_printf("connect IPV6_MULTICAST_LOOP failed.  multicast in kernel?\n");
+        goto err_cleanup;
+    }
+    freeaddrinfo(multicastAddr);
+#else
     if ((ntohl(tempaddr) >> 28) == 0xe) {
         /* only set multicast parameters for multicast destination IPs */
         iRet = setsockopt(iSocket, IPPROTO_IP, IP_MULTICAST_TTL, &cTtl, sizeof(char));
         if (iRet < 0) {
             error_printf("setsockopt IP_MULTICAST_TTL failed.  multicast in kernel?\n");
-            return 1;
+            close(iSocket);
+            goto err_cleanup;
         }
 
         cLoop = 1;      /* !? */
         iRet = setsockopt(iSocket, IPPROTO_IP, IP_MULTICAST_LOOP, &cLoop, sizeof(char));
         if (iRet < 0) {
             error_printf("setsockopt IP_MULTICAST_LOOP failed.  multicast in kernel?\n");
-            return 1;
+            close(iSocket);
+            goto err_cleanup;
         }
     }
     iRet = connect(iSocket, (struct sockaddr *) &sin, sizeof(struct sockaddr_in));
     if (iRet < 0) {
         error_printf("connect IP_MULTICAST_LOOP failed.  multicast in kernel?\n");
-        return 1;
+        close(iSocket);
+        goto err_cleanup;
     }
+#endif
 
     rtpsocket = iSocket;
 
     return 0;
+
+err_cleanup:
+    if(iSocket >= 0)
+        close(iSocket);
+#ifdef IPV6
+    if(multicastAddr)
+        freeaddrinfo(multicastAddr);
+#endif
+    return 1;
 }
 
 

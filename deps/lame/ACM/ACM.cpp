@@ -22,7 +22,7 @@
  
 /*!
 	\author Steve Lhomme
-	\version \$Id: ACM.cpp,v 1.20 2007/05/17 22:25:40 robert Exp $
+	\version \$Id$
 */
 
 #if !defined(STRICT)
@@ -178,7 +178,7 @@ LPARAM lParam  // second message parameter
 //	static LOGFONT lf;  // structure for font information  
 //	static HFONT hfnt;
 	static HCURSOR hcOverCursor = NULL;
-	BOOL bResult;
+	BOOL bResult = FALSE;
 
 	switch (uMsg) {
 		case WM_INITDIALOG:
@@ -249,12 +249,7 @@ LPARAM lParam  // second message parameter
 
 				if (bUrl)
 				{
-					LPSTR tmpStr;
-					HRESULT hresult = ::TranslateURL(Url, TRANSLATEURL_FL_GUESS_PROTOCOL|TRANSLATEURL_FL_GUESS_PROTOCOL, &tmpStr);
-					if (hresult == S_OK)
-						::ShellExecute(hwndDlg,"open",tmpStr,NULL,"",SW_SHOWMAXIMIZED );
-					else if (hresult == S_FALSE)
-						::ShellExecute(hwndDlg,"open",Url,NULL,"",SW_SHOWMAXIMIZED );
+					::ShellExecute(hwndDlg,"open",Url,NULL,"",SW_SHOWMAXIMIZED );
 				}
 
 			}

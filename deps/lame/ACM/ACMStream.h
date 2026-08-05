@@ -22,7 +22,7 @@
  
 /*!
 	\author Steve Lhomme
-	\version \$Id: ACMStream.h,v 1.5 2006/12/25 21:37:34 robert Exp $
+	\version \$Id$
 */
 
 #if !defined(_ACMSTREAM_H__INCLUDED_)

@@ -19,7 +19,7 @@
  * Boston, MA 02111-1307, USA.
  */
 
-/* $Id: lame.h,v 1.189.2.1 2012/01/08 23:49:58 robert Exp $ */
+/* $Id$ */
 
 #ifndef LAME_LAME_H
 #define LAME_LAME_H
@@ -622,8 +622,9 @@ int CDECL lame_get_noclipGainChange(const lame_global_flags *);
    not clip or the value cannot be determined */
 float CDECL lame_get_noclipScale(const lame_global_flags *);
 
-
-
+/* returns the limit of PCM samples, which one can pass in an encode call
+   under the constrain of a provided buffer of size buffer_size */
+int CDECL lame_get_maximum_number_of_samples(lame_t gfp, size_t buffer_size);
 
 
 
@@ -837,7 +838,25 @@ int CDECL lame_encode_buffer_int(
         const int           mp3buf_size ); /* number of valid octets in this
                                               stream                        */
 
-
+/*
+ * as above, but for interleaved data.
+ * !! NOTE: !! data must still be scaled to be in the same range as
+ * type 'int32_t'.   Data should be in the range:  +/- 2^(8*size(int32_t)-1)
+ * NOTE:
+ * num_samples = number of samples in the L (or R)
+ * channel, not the total number of samples in pcm[]
+ */
+int
+lame_encode_buffer_interleaved_int(
+        lame_t          gfp,
+        const int       pcm [],            /* PCM data for left and right
+                                              channel, interleaved          */
+        const int       nsamples,          /* number of samples per channel,
+                                              _not_ number of samples in
+                                              pcm[]                         */
+        unsigned char*  mp3buf,            /* pointer to encoded MP3 stream */
+        const int       mp3buf_size );     /* number of valid octets in this
+                                              stream                        */
 
 
 
@@ -1030,6 +1049,9 @@ typedef struct {
 
 /* required call to initialize decoder */
 hip_t CDECL hip_decode_init(void);
+/* With that you don't have to care about MP3 encoder/decoder delay
+   anymore. Only available with libmpg123 (returns NULL otherwise). */
+hip_t CDECL hip_decode_init_gapless(void);
 
 /* cleanup call to exit decoder  */
 int CDECL hip_decode_exit(hip_t gfp);
@@ -1182,6 +1204,12 @@ void CDECL id3tag_init     (lame_t gfp);
 /* force addition of version 2 tag */
 void CDECL id3tag_add_v2   (lame_t gfp);
 
+/* force addition of version 2.4 tag with UTF-8 encoding */
+void CDECL id3tag_add_v2_4_UTF8 (lame_t gfp);
+
+/* add only a version 2.4 tag with UTF-8 encoding */
+void CDECL id3tag_v2_4_UTF8_only (lame_t gfp);
+
 /* add only a version 1 tag */
 void CDECL id3tag_v1_only  (lame_t gfp);
 
@@ -1273,6 +1301,12 @@ int CDECL id3tag_set_textinfo_utf16(lame_t gfp, char const *id, unsigned short c
 
 /* experimental */
 int CDECL id3tag_set_comment_utf16(lame_t gfp, char const *lang, unsigned short const *desc, unsigned short const *text);
+
+/* experimental */
+int CDECL id3tag_set_textinfo_utf8(lame_t gfp, char const *id, unsigned short const *text);
+
+/* experimental */
+int CDECL id3tag_set_comment_utf8(lame_t gfp, char const *lang, char const *desc, char const *text);
 
 
 /***********************************************************************

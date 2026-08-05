@@ -1,6 +1,10 @@
 hip - Hip Isn't a Player
 A LGPLed mpeg audio decoding library.
 
+*** This dorectory contained a modified version of mpg123, it is now
+*** replaced by a proper interface in libmpg123. What remains is just
+*** the interface for lame which then calls into libmpg123.
+
 Based off of Michael Hipp's mpglib 0.2a <http://www.mpg123.de/>, with many
 improvements by the lame development team (see AUTHORS).
 

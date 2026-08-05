@@ -228,7 +228,7 @@
 #define PACKAGE_NAME "lame"
 
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "lame 3.99.5"
+#define PACKAGE_STRING "lame 3.101"
 
 /* Define to the one symbol short name of this package. */
 #define PACKAGE_TARNAME "lame"
@@ -237,7 +237,7 @@
 #define PACKAGE_URL ""
 
 /* Define to the version of this package. */
-#define PACKAGE_VERSION "3.99.5"
+#define PACKAGE_VERSION "3.101"
 
 /* Define to 1 if the C compiler supports function prototypes. */
 #define PROTOTYPES 1
@@ -318,7 +318,7 @@
 
 
 /* Version number of package */
-#define VERSION "3.99.5"
+#define VERSION "3.101"
 
 /* Define if using the dmalloc debugging malloc package */
 /* #undef WITH_DMALLOC */

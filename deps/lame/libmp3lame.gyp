@@ -110,13 +110,5 @@
         ],
       },
     },
-
-    # test program that prints the version number
-    {
-      'target_name': 'test',
-      'type': 'executable',
-      'dependencies': [ 'mp3lame' ],
-      'sources': [ 'test.c' ]
-    },
   ]
 }

@@ -19,7 +19,7 @@
  * Boston, MA 02111-1307, USA.
  */
 
-/* $Id: lametime.c,v 1.21 2011/05/07 16:05:17 rbrito Exp $ */
+/* $Id$ */
 
 /*
  * name:        GetCPUTime ( void )
@@ -136,7 +136,7 @@ lame_set_stream_binary_mode(FILE * const fp)
 #elif defined __BORLANDC__
     setmode(_fileno(fp), O_BINARY);
 #elif defined __CYGWIN__
-    setmode(fileno(fp), _O_BINARY);
+    setmode(fileno(fp), O_BINARY);
 #elif defined _WIN32
     _setmode(_fileno(fp), _O_BINARY);
 #else

@@ -1,4 +1,4 @@
-## $Id: Makefile.am,v 1.39 2010/10/30 13:21:02 robert Exp $
+## $Id$
 
 include $(top_srcdir)/Makefile.am.global
 
@@ -20,15 +20,17 @@ decoder_ldadd =
 endif
 
 libmp3lame_la_LIBADD =	$(cpu_ldadd) $(vector_ldadd) $(decoder_ldadd) \
-			$(CONFIG_MATH_LIB)
+			@LIBMP3LAME_LDADD@ $(CONFIG_MATH_LIB)
 libmp3lame_la_LDFLAGS = -version-info @LIB_MAJOR_VERSION@:@LIB_MINOR_VERSION@ \
+			-export-symbols $(top_srcdir)/include/libmp3lame.sym \
 			-no-undefined
 
-INCLUDES = @INCLUDES@ -I$(top_srcdir)/mpglib -I$(top_builddir)
+INCLUDES = @INCLUDES@ -I$(top_srcdir) -I$(top_builddir)
 
 DEFS = @DEFS@ @CONFIG_DEFS@
 
 EXTRA_DIST = \
+	lame.pc.in \
 	lame.rc \
 	vbrquantize.h \
 	logoe.ico
@@ -57,6 +59,7 @@ libmp3lame_la_SOURCES = \
 
 noinst_HEADERS= \
 	VbrTag.h \
+	VbrTagCrc.h \
 	bitstream.h \
 	encoder.h \
 	fft.h \
@@ -99,3 +102,8 @@ lclint: lclint.txt
 #$(OBJECTS): libtool
 #libtool: $(LIBTOOL_DEPS)
 #	$(SHELL) $(top_builddir)/config.status --recheck
+
+pkgconfigdir = $(libdir)/pkgconfig
+pkgconfig_DATA = lame.pc
+
+DISTCLEANFILES = $(pkgconfig_DATA)

@@ -1,4 +1,4 @@
-/* $Id: mp3x.c,v 1.28 2010/04/08 11:07:50 robert Exp $ */
+/* $Id$ */
 
 #ifdef HAVE_CONFIG_H
 # include <config.h>

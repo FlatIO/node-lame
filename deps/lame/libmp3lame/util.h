@@ -127,12 +127,8 @@ extern  "C" {
         void   *pointer;     /* to use with malloc/free */
     } aligned_pointer_t;
 
-    void    malloc_aligned(aligned_pointer_t * ptr, unsigned int size, unsigned int bytes);
+    void    calloc_aligned(aligned_pointer_t * ptr, unsigned int size, unsigned int bytes);
     void    free_aligned(aligned_pointer_t * ptr);
-
-
-    typedef void (*iteration_loop_t) (lame_internal_flags * gfc, const FLOAT pe[2][2],
-                                      const FLOAT ms_ratio[2], const III_psy_ratio ratio[2][2]);
 
 
     /* "bit_stream.h" Type Definitions */
@@ -211,6 +207,7 @@ extern  "C" {
      *  global data constants
      */
     typedef struct {
+        FLOAT window[BLKSIZE], window_s[BLKSIZE_s / 2];
         PsyConst_CB2SB_t l;
         PsyConst_CB2SB_t s;
         PsyConst_CB2SB_t l_to_s;
@@ -486,6 +483,7 @@ extern  "C" {
 #  define  LAME_ID   0xFFF88E3B
         unsigned long class_id;
 
+        int     lame_init_params_successful;
         int     lame_encode_frame_init;
         int     iteration_init_init;
         int     fill_buffer_resample_init;
@@ -534,8 +532,6 @@ extern  "C" {
         plotting_data *pinfo;
         hip_t hip;
 
-        iteration_loop_t iteration_loop;
-
         /* functions to replace with CPU feature optimized versions in takehiro.c */
         int     (*choose_table) (const int *ix, const int *const end, int *const s);
         void    (*fft_fht) (FLOAT *, int);
@@ -564,7 +560,7 @@ extern  "C" {
     extern int FindNearestBitrate(int, int, int);
     extern int map2MP3Frequency(int freq);
     extern int SmpFrqIndex(int, int *const);
-    extern int nearestBitrateFullIndex(uint16_t brate);
+    extern int nearestBitrateFullIndex(uint16_t bitrate);
     extern FLOAT ATHformula(SessionConfig_t const *cfg, FLOAT freq);
     extern FLOAT freq2bark(FLOAT freq);
     void    disable_FPE(void);
@@ -613,6 +609,7 @@ extern  "C" {
     int     is_lame_internal_flags_valid(const lame_internal_flags * gfp);
     
     extern void hip_set_pinfo(hip_t hip, plotting_data* pinfo);
+    extern void hip_finish_pinfo(hip_t hip);
 
 #ifdef __cplusplus
 }
