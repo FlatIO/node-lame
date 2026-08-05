@@ -1,10 +1,25 @@
-
 var fs = require('fs');
 var path = require('path');
+var stream = require('stream');
 var lame = require('../');
 var assert = require('assert');
 var fixtures = path.resolve(__dirname, 'fixtures');
 var outputName = path.resolve(__dirname, 'output.wav');
+var Writable = stream.Writable;
+var pipeline = stream.pipeline;
+
+function collect (readable) {
+  return new Promise(function (resolve, reject) {
+    var chunks = [];
+    readable.on('data', function (chunk) {
+      chunks.push(chunk);
+    });
+    readable.on('error', reject);
+    readable.on('end', function () {
+      resolve(Buffer.concat(chunks));
+    });
+  });
+}
 
 describe('Decoder', function () {
 
@@ -33,6 +48,24 @@ describe('Decoder', function () {
         done();
       });
       file.pipe(decoder);
+    });
+
+    it('should output decoded PCM data', function () {
+      var file = fs.createReadStream(filename);
+      var decoder = new lame.Decoder();
+      var format;
+
+      decoder.on('format', function (value) {
+        format = value;
+      });
+
+      return collect(file.pipe(decoder)).then(function (output) {
+        assert(output.length > 0);
+        assert(format);
+        assert.equal(format.sampleRate, 11025);
+        assert.equal(format.channels, 2);
+        assert.equal(format.bitDepth, 16);
+      });
     });
 
     it('should emit a single "format" event', function (done) {
@@ -98,6 +131,29 @@ describe('Decoder', function () {
 
       // enable "flow"
       decoder.resume();
+    });
+
+    it('should work with stream.pipeline()', function () {
+      var decoder = new lame.Decoder();
+      var bytes = 0;
+      var output = new Writable({
+        write: function (chunk, encoding, done) {
+          bytes += chunk.length;
+          done();
+        }
+      });
+
+      assert.equal(typeof decoder._transform, 'function');
+      assert(decoder.readable);
+      assert(decoder.writable);
+
+      return new Promise(function (resolve, reject) {
+        pipeline(fs.createReadStream(filename), decoder, output, function (err) {
+          if (err) return reject(err);
+          assert(bytes > 0);
+          resolve();
+        });
+      });
     });
 
   });
