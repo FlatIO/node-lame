@@ -5,6 +5,7 @@
   * Update bundled LAME to 3.101 (@LeeGDavis)
   * Update readable-stream to 4.7.0 (@LeeGDavis)
   * Update Mocha to 12.x (@LeeGDavis)
+  * Replace bindings with node-gyp-build (@LeeGDavis)
   * Add encoder and decoder stream coverage (@LeeGDavis)
 
 1.2.8 / 2024-06-06
